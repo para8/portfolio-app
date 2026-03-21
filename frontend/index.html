@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ══ AUTH SCREEN ══ -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">portfolio/v4</div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-auth-tab="login">Sign in</button>
+      <button class="auth-tab" data-auth-tab="signup">Create account</button>
+    </div>
+
+    <!-- Login form -->
+    <div class="auth-form" id="auth-form-login">
+      <div class="auth-field">
+        <label>Email</label>
+        <input type="email" id="login-email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="auth-field">
+        <label>Password</label>
+        <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="auth-submit" id="btn-login">Sign in</button>
+      <div class="auth-msg" id="login-msg"></div>
+    </div>
+
+    <!-- Signup form -->
+    <div class="auth-form" id="auth-form-signup" style="display:none">
+      <div class="auth-field">
+        <label>Email</label>
+        <input type="email" id="signup-email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="auth-field">
+        <label>Password</label>
+        <input type="password" id="signup-password" placeholder="min 6 characters" autocomplete="new-password">
+      </div>
+      <button class="auth-submit" id="btn-signup">Create account</button>
+      <div class="auth-msg" id="signup-msg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ APP ══ -->
+<div id="app-screen" style="display:none">
+<div class="shell">
+
+<!-- ── SIDEBAR ── -->
+<aside class="sidebar">
+  <div class="logo">portfolio/v4</div>
+  <nav>
+    <div class="nav-section">Views</div>
+    <div class="nav-item active" data-view="positions">
+      <span class="nav-icon">◈</span> Positions
+    </div>
+    <div class="nav-item" data-view="insights">
+      <span class="nav-icon">◎</span> Insights
+    </div>
+    <div class="nav-item" data-view="transactions">
+      <span class="nav-icon">⟳</span> Transactions
+    </div>
+    <div class="nav-item" data-view="prices">
+      <span class="nav-icon">⊙</span> Prices
+    </div>
+    <div class="nav-section">Actions</div>
+    <div class="nav-item" data-view="add">
+      <span class="nav-icon">+</span> Add
+    </div>
+  </nav>
+
+  <div class="fx-box">
+    <div class="fx-label">USD → INR</div>
+    <div class="fx-row">
+      <span class="fx-prefix">1 USD =</span>
+      <input class="fx-input" type="number" id="fx-rate" value="86" step="0.5" min="1">
+    </div>
+    <div class="fx-note" id="fx-note">cost basis uses historical rates</div>
+  </div>
+
+  <button class="logout-btn" id="btn-logout">Sign out</button>
+</aside>
+
+<!-- ── MAIN ── -->
+<main class="main">
+
+  <!-- TOAST -->
+  <div id="toast" class="toast"></div>
+
+  <!-- ══ POSITIONS ══ -->
+  <div class="view active" id="view-positions">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Positions</div>
+        <div class="page-sub" id="pos-sub">Loading…</div>
+      </div>
+    </div>
+
+    <div class="summary-strip">
+      <div class="stat-card">
+        <div class="stat-label">Total Invested</div>
+        <div class="stat-value" id="s-inv">—</div>
+        <div class="stat-sub">cost basis in ₹</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Current Value</div>
+        <div class="stat-value" id="s-val">—</div>
+        <div class="stat-sub" id="s-val-sub">priced positions only</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unrealised P&amp;L</div>
+        <div class="stat-value" id="s-pnl">—</div>
+        <div class="stat-sub" id="s-pnl-sub"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">USD Exposure</div>
+        <div class="stat-value amber" id="s-fx">—</div>
+        <div class="stat-sub" id="s-fx-sub"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Position</th>
+            <th>Category</th>
+            <th class="num">Weight</th>
+            <th class="num">Invested</th>
+            <th class="num">Value</th>
+            <th class="num">P&amp;L</th>
+            <th class="num">Avg Price</th>
+            <th class="num">Units</th>
+          </tr>
+        </thead>
+        <tbody id="pos-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="alloc-grid" id="alloc-section">
+      <div>
+        <div class="alloc-title">By Category</div>
+        <div id="alloc-cat"></div>
+      </div>
+      <div>
+        <div class="alloc-title">By Sector</div>
+        <div id="alloc-sector"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ INSIGHTS ══ -->
+  <div class="view" id="view-insights">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Insights</div>
+        <div class="page-sub">Allocation breakdown</div>
+      </div>
+    </div>
+
+    <div class="ins-card">
+      <div class="ins-card-title">Allocation by Category</div>
+      <div class="ins-card-sub">Portfolio weight per asset category</div>
+      <div class="alloc-viz-wrap">
+        <div class="pie-wrap">
+          <canvas id="alloc-pie" width="240" height="240"></canvas>
+          <div class="pie-center">
+            <div class="pie-center-label" id="apc-label">total value</div>
+            <div class="pie-center-pct" id="apc-pct">100%</div>
+            <div class="pie-center-val" id="apc-val">—</div>
+          </div>
+        </div>
+        <div id="pie-legend" class="pie-legend"></div>
+      </div>
+    </div>
+
+    <div class="ins-card">
+      <div class="ins-card-title">Allocation by Sector</div>
+      <div class="ins-card-sub">Portfolio weight per investment theme</div>
+      <div id="sector-bars"></div>
+    </div>
+  </div>
+
+  <!-- ══ TRANSACTIONS ══ -->
+  <div class="view" id="view-transactions">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Transactions</div>
+        <div class="page-sub" id="txn-sub">Loading…</div>
+      </div>
+    </div>
+    <div class="filter-bar">
+      <select id="txn-broker-filter" class="filter-select">
+        <option value="">All brokers</option>
+      </select>
+      <select id="txn-type-filter" class="filter-select">
+        <option value="">Buy &amp; Sell</option>
+        <option value="Buy">Buy only</option>
+        <option value="Sell">Sell only</option>
+      </select>
+      <div class="filter-btns">
+        <button class="filter-btn active" data-days="">All</button>
+        <button class="filter-btn" data-days="90">90d</button>
+        <button class="filter-btn" data-days="30">30d</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Ticker</th>
+            <th>Type</th>
+            <th class="num">Units</th>
+            <th class="num">Price</th>
+            <th class="num">Amount</th>
+            <th>Broker</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="txn-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ══ PRICES ══ -->
+  <div class="view" id="view-prices">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Prices</div>
+        <div class="page-sub">Stalest prices at top</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Name</th>
+            <th>Currency</th>
+            <th class="num">Price</th>
+            <th>Last Updated</th>
+          </tr>
+        </thead>
+        <tbody id="prices-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ══ ADD ══ -->
+  <div class="view" id="view-add">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Add</div>
+        <div class="page-sub">Add a ticker or transaction</div>
+      </div>
+    </div>
+
+    <div class="add-tabs">
+      <button class="add-tab active" data-tab="ticker">Add Ticker</button>
+      <button class="add-tab" data-tab="transaction">Add Transaction</button>
+    </div>
+
+    <!-- Add Ticker -->
+    <div class="form-card" id="add-ticker-form">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Ticker Symbol</label>
+          <input type="text" id="new-ticker-symbol" placeholder="e.g. RELIANCE">
+        </div>
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="new-ticker-name" placeholder="Display name">
+        </div>
+        <div class="form-group">
+          <label>Currency</label>
+          <select id="new-ticker-currency">
+            <option value="INR">INR</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select id="new-ticker-category"></select>
+        </div>
+        <div class="form-group full">
+          <label>Sector</label>
+          <select id="new-ticker-sector"></select>
+        </div>
+      </div>
+      <button class="btn-submit" id="btn-add-ticker">Add Ticker</button>
+    </div>
+
+    <!-- Add Transaction -->
+    <div class="form-card" id="add-txn-form" style="display:none">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Ticker</label>
+          <select id="new-txn-ticker"></select>
+        </div>
+        <div class="form-group">
+          <label>Type</label>
+          <select id="new-txn-type">
+            <option value="Buy">Buy</option>
+            <option value="Sell">Sell</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" id="new-txn-date">
+        </div>
+        <div class="form-group">
+          <label>Units</label>
+          <input type="number" id="new-txn-units" step="any" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label>Price (native currency)</label>
+          <input type="number" id="new-txn-price" step="any" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label>Broker</label>
+          <select id="new-txn-broker"></select>
+        </div>
+        <div class="form-group">
+          <label>Currency (read-only)</label>
+          <input type="text" id="new-txn-currency" readonly style="opacity:0.6">
+        </div>
+      </div>
+      <div class="preview-box" id="txn-preview">
+        <div class="preview-item">
+          <label>Amount</label>
+          <div class="preview-val" id="prev-amount">—</div>
+        </div>
+        <div class="preview-item">
+          <label>Currency</label>
+          <div class="preview-val" id="prev-currency">—</div>
+        </div>
+        <div class="preview-item">
+          <label>Est. INR value</label>
+          <div class="preview-val" id="prev-inr">—</div>
+        </div>
+      </div>
+      <button class="btn-submit" id="btn-add-txn">Add Transaction</button>
+    </div>
+  </div>
+
+</main>
+</div>
+</div><!-- #app-screen -->
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
