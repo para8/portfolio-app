@@ -70,6 +70,11 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def get_display_name(ticker_obj) -> str:
+    """Return display_name if set, otherwise fall back to name."""
+    return ticker_obj.display_name or ticker_obj.name
+
+
 def historical_fx(date_str: str, fx_rows: list) -> float:
     """Return the applicable USD→INR rate for a transaction date."""
     ym = date_str[:7]
@@ -151,7 +156,8 @@ def get_positions(
 
         positions.append({
             "ticker": ticker,
-            "name": ticker_obj.name,
+            "name": get_display_name(ticker_obj),
+            "display_name": ticker_obj.display_name,
             "currency": currency,
             "category_id": ticker_obj.category_id,
             "sector": sector_name,
@@ -223,6 +229,7 @@ def get_positions(
         g["positions"].append(schemas.PositionItem(
             ticker=p["ticker"],
             name=p["name"],
+            display_name=p["display_name"],
             sector=p["sector"],
             held_units=p["held_units"],
             avg_buy_price=p["avg_buy_price"],
@@ -276,6 +283,7 @@ def get_tickers(
         result.append({
             "ticker": t.ticker,
             "name": t.name,
+            "display_name": t.display_name,
             "currency": t.currency,
             "category_id": t.category_id,
             "sector_id": t.sector_id,
@@ -298,6 +306,7 @@ def create_ticker(
         user_id=user_id,
         ticker=payload.ticker,
         name=payload.name,
+        display_name=payload.display_name or None,
         currency=payload.currency,
         category_id=payload.category_id,
         sector_id=payload.sector_id,
@@ -306,8 +315,8 @@ def create_ticker(
     db.add(t)
     db.commit()
     db.refresh(t)
-    return {"ticker": t.ticker, "name": t.name, "currency": t.currency,
-            "category_id": t.category_id, "sector_id": t.sector_id}
+    return {"ticker": t.ticker, "name": t.name, "display_name": t.display_name,
+            "currency": t.currency, "category_id": t.category_id, "sector_id": t.sector_id}
 
 
 # ── Transactions ──────────────────────────────────────────────────────────────

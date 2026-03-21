@@ -23,6 +23,9 @@ let txnDaysFilter = '';
 let pieChart = null;
 let expandedGroups = new Set();
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const displayName = (t) => t?.display_name || t?.name || '';
+
 // ── Formatting ─────────────────────────────────────────────────────────────────
 const inr = v => v == null ? '—' : '₹' + Math.round(Math.abs(v)).toLocaleString('en-IN');
 const inrK = v => {
@@ -401,7 +404,7 @@ function renderPositions() {
           <td colspan="2">
             <div style="display:flex;align-items:center;gap:8px">
               <span class="ticker-tag">${pos.ticker}</span>
-              <span style="font-size:11px;color:var(--muted2)">${pos.name}</span>
+              <span style="font-size:11px;color:var(--muted2)">${pos.display_name || pos.name}</span>
             </div>
           </td>
           <td class="num" style="color:var(--muted);font-size:10px">${pos.weight_pct != null ? pos.weight_pct.toFixed(1) + '%' : '—'}</td>
@@ -665,7 +668,7 @@ function renderTransactions() {
       <td>
         <div style="display:flex;align-items:center;gap:7px">
           <span class="ticker-tag">${t.ticker}</span>
-          <span style="font-size:11px;color:var(--muted)">${ticker?.name || ''}</span>
+          <span style="font-size:11px;color:var(--muted)">${displayName(ticker)}</span>
         </div>
       </td>
       <td><span class="txn-type type-${t.type}">${t.type}</span></td>
@@ -715,7 +718,7 @@ function renderPrices() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><span class="ticker-tag">${p.ticker}</span></td>
-      <td style="font-size:12px;color:var(--muted2)">${ticker?.name || '—'}</td>
+      <td style="font-size:12px;color:var(--muted2)">${displayName(ticker) || '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${cur}</td>
       <td class="num">
         ${sym}<input class="price-input${isStale ? ' price-stale' : ''}"
@@ -771,7 +774,7 @@ function renderAddForm() {
   const tkSel = document.getElementById('new-txn-ticker');
   tkSel.innerHTML = '';
   for (const t of state.tickers.sort((a, b) => a.ticker.localeCompare(b.ticker))) {
-    tkSel.innerHTML += `<option value="${t.ticker}" data-currency="${t.currency}">${t.ticker} — ${t.name}</option>`;
+    tkSel.innerHTML += `<option value="${t.ticker}" data-currency="${t.currency}">${t.ticker} — ${displayName(t)}</option>`;
   }
 
   // Populate broker dropdown for transaction
@@ -827,6 +830,7 @@ function setupAddForm() {
   document.getElementById('btn-add-ticker').addEventListener('click', async () => {
     const symbol = document.getElementById('new-ticker-symbol').value.trim().toUpperCase();
     const name = document.getElementById('new-ticker-name').value.trim();
+    const display_name = document.getElementById('new-ticker-display-name').value.trim() || null;
     const currency = document.getElementById('new-ticker-currency').value;
     const category_id = parseInt(document.getElementById('new-ticker-category').value);
     const sector_id = parseInt(document.getElementById('new-ticker-sector').value);
@@ -834,12 +838,13 @@ function setupAddForm() {
     if (!symbol || !name) return showToast('Ticker and name are required', 'error');
 
     try {
-      await api('POST', '/tickers', { ticker: symbol, name, currency, category_id, sector_id });
+      await api('POST', '/tickers', { ticker: symbol, name, display_name, currency, category_id, sector_id });
       state.tickers = await api('GET', '/tickers');
       renderAddForm();
       showToast(`Ticker ${symbol} added`);
       document.getElementById('new-ticker-symbol').value = '';
       document.getElementById('new-ticker-name').value = '';
+      document.getElementById('new-ticker-display-name').value = '';
     } catch (err) {
       showToast('Error: ' + err.message, 'error');
     }

@@ -41,6 +41,7 @@ class BrokerOut(BaseModel):
 class TickerCreate(BaseModel):
     ticker: str
     name: str
+    display_name: Optional[str] = None
     currency: str
     category_id: int
     sector_id: int
@@ -49,6 +50,7 @@ class TickerCreate(BaseModel):
 class TickerOut(BaseModel):
     ticker: str
     name: str
+    display_name: Optional[str] = None
     currency: str
     category_id: Optional[int]
     sector_id: Optional[int]
@@ -128,6 +130,7 @@ class ConfigOut(BaseModel):
 class PositionItem(BaseModel):
     ticker: str
     name: str
+    display_name: Optional[str] = None
     sector: Optional[str]
     held_units: float
     avg_buy_price: float

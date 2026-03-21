@@ -35,6 +35,7 @@ class Ticker(Base):
     user_id = Column(Text, nullable=True)
     ticker = Column(Text, nullable=False)
     name = Column(Text, nullable=False)
+    display_name = Column(Text, nullable=True)
     currency = Column(Text, nullable=False)
     category_id = Column(Integer)
     sector_id = Column(Integer)
