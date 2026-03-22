@@ -30,12 +30,11 @@ class Broker(Base):
 
 class Ticker(Base):
     __tablename__ = "tickers"
-    __table_args__ = (UniqueConstraint("user_id", "ticker", name="tickers_user_ticker_key"),)
+    __table_args__ = (UniqueConstraint("user_id", "name", name="tickers_user_name_key"),)
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Text, nullable=True)
-    ticker = Column(Text, nullable=False)
     name = Column(Text, nullable=False)
-    display_name = Column(Text, nullable=True)
+    short_name = Column(Text, nullable=True)
     currency = Column(Text, nullable=False)
     category_id = Column(Integer)
     sector_id = Column(Integer)
@@ -47,7 +46,7 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Text, nullable=True)
     date = Column(Text, nullable=False)
-    ticker = Column(Text, nullable=False)  # text only, FK dropped (tickers no longer has text PK)
+    ticker_id = Column(Integer, nullable=False)  # FK to tickers.id
     type = Column(Text, nullable=False)
     units = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
@@ -58,10 +57,10 @@ class Transaction(Base):
 
 class Price(Base):
     __tablename__ = "prices"
-    __table_args__ = (UniqueConstraint("user_id", "ticker", name="prices_user_ticker_key"),)
+    __table_args__ = (UniqueConstraint("user_id", "ticker_id", name="prices_user_ticker_id_key"),)
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Text, nullable=True)
-    ticker = Column(Text, nullable=False)
+    ticker_id = Column(Integer, nullable=False)  # FK to tickers.id
     price = Column(Float, nullable=False)
     updated_at = Column(Text)
 

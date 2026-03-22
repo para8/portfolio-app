@@ -39,18 +39,17 @@ class BrokerOut(BaseModel):
 
 
 class TickerCreate(BaseModel):
-    ticker: str
     name: str
-    display_name: Optional[str] = None
+    short_name: Optional[str] = None
     currency: str
     category_id: int
     sector_id: int
 
 
 class TickerOut(BaseModel):
-    ticker: str
+    id: int
     name: str
-    display_name: Optional[str] = None
+    short_name: Optional[str] = None
     currency: str
     category_id: Optional[int]
     sector_id: Optional[int]
@@ -62,7 +61,7 @@ class TickerOut(BaseModel):
 
 
 class TransactionCreate(BaseModel):
-    ticker: str
+    ticker_id: int
     type: str
     units: float
     price: float
@@ -73,7 +72,8 @@ class TransactionCreate(BaseModel):
 class TransactionOut(BaseModel):
     id: int
     date: str
-    ticker: str
+    ticker_id: int
+    ticker_name: Optional[str] = None
     type: str
     units: float
     price: float
@@ -91,7 +91,7 @@ class PriceUpdate(BaseModel):
 
 
 class PriceOut(BaseModel):
-    ticker: str
+    ticker_id: int
     price: float
     updated_at: Optional[str]
 
@@ -126,11 +126,35 @@ class ConfigOut(BaseModel):
         from_attributes = True
 
 
+# Import schemas
+class NewTickerAssignment(BaseModel):
+    name: str                           # fund name from file (becomes ticker.name)
+    short_name: Optional[str] = None
+    category_id: int
+    sector_id: int
+
+
+class ImportTransaction(BaseModel):
+    fund_name: str                      # scheme name; backend resolves to ticker_id
+    date: str
+    type: str
+    units: float
+    price: float
+    amount: float
+
+
+class ImportConfirmPayload(BaseModel):
+    broker_id: Optional[int] = None
+    currency: str
+    new_tickers: List[NewTickerAssignment] = []
+    transactions: List[ImportTransaction]  # only checked, non-duplicate rows
+
+
 # Positions response shapes
 class PositionItem(BaseModel):
-    ticker: str
+    ticker_id: int
     name: str
-    display_name: Optional[str] = None
+    short_name: Optional[str] = None
     sector: Optional[str]
     held_units: float
     avg_buy_price: float

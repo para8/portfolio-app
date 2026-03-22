@@ -24,7 +24,97 @@ let pieChart = null;
 let expandedGroups = new Set();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const displayName = (t) => t?.display_name || t?.name || '';
+const displayName = (t) => t?.short_name || t?.name || '';
+
+// ── Inline add category/sector ────────────────────────────────────────────────
+const COLOR_PALETTE = ['#facc15','#93c5fd','#d8b4fe','#fdba74','#fbbf24','#a5f3fc','#6ee7b7','#f87171','#34d399','#60a5fa'];
+
+function pickAutoColor(type) {
+  const used = (type === 'category' ? state.categories : state.sectors).map(x => x.color);
+  return COLOR_PALETTE.find(c => !used.includes(c)) ?? COLOR_PALETTE[used.length % COLOR_PALETTE.length];
+}
+
+function refreshAllSelectsOfType(type, newId) {
+  const items = type === 'category' ? state.categories : state.sectors;
+  const selector = type === 'category'
+    ? '#new-ticker-category, .resolve-category'
+    : '#new-ticker-sector, .resolve-sector';
+  document.querySelectorAll(selector).forEach(sel => {
+    sel.innerHTML = items.map(x =>
+      `<option value="${x.id}" ${x.id === newId ? 'selected' : ''}>${x.name}</option>`
+    ).join('');
+  });
+}
+
+function attachSelectAdd(selectEl, type) {
+  if (!selectEl || selectEl.dataset.addAttached) return;
+  selectEl.dataset.addAttached = '1';
+
+  // Wrap select + "+" button
+  const wrap = document.createElement('div');
+  wrap.className = 'select-add-wrap';
+  selectEl.parentNode.insertBefore(wrap, selectEl);
+  wrap.appendChild(selectEl);
+
+  const plusBtn = document.createElement('button');
+  plusBtn.type = 'button';
+  plusBtn.className = 'btn-add-opt';
+  plusBtn.title = `Add new ${type}`;
+  plusBtn.textContent = '+';
+  wrap.appendChild(plusBtn);
+
+  // Inline form (hidden by default)
+  const inline = document.createElement('div');
+  inline.className = 'add-opt-inline';
+  inline.innerHTML = `
+    <input type="text" class="add-opt-input" placeholder="New ${type} name">
+    <span class="add-opt-error"></span>
+    <button type="button" class="add-opt-submit" disabled>Add</button>
+  `;
+  wrap.parentNode.insertBefore(inline, wrap.nextSibling);
+
+  const input = inline.querySelector('.add-opt-input');
+  const error = inline.querySelector('.add-opt-error');
+  const submitBtn = inline.querySelector('.add-opt-submit');
+
+  plusBtn.addEventListener('click', () => {
+    const open = inline.classList.toggle('open');
+    if (open) { input.value = ''; error.textContent = ''; submitBtn.disabled = true; input.focus(); }
+  });
+
+  input.addEventListener('input', () => {
+    const val = input.value.trim();
+    const items = type === 'category' ? state.categories : state.sectors;
+    const exists = items.some(x => x.name.toLowerCase() === val.toLowerCase());
+    if (!val) {
+      error.textContent = ''; submitBtn.disabled = true;
+    } else if (exists) {
+      error.textContent = 'Already exists'; submitBtn.disabled = true;
+    } else {
+      error.textContent = ''; submitBtn.disabled = false;
+    }
+  });
+
+  submitBtn.addEventListener('click', async () => {
+    const name = input.value.trim();
+    if (!name) return;
+    const color = pickAutoColor(type);
+    try {
+      submitBtn.disabled = true;
+      const created = await api('POST', `/${type === 'category' ? 'categories' : 'sectors'}`, { name, color });
+      if (type === 'category') {
+        state.categories = await api('GET', '/categories');
+      } else {
+        state.sectors = await api('GET', '/sectors');
+      }
+      refreshAllSelectsOfType(type, created.id);
+      inline.classList.remove('open');
+    } catch (err) {
+      error.textContent = err.message || 'Error saving';
+      submitBtn.disabled = false;
+    }
+  });
+}
 
 // ── Formatting ─────────────────────────────────────────────────────────────────
 const inr = v => v == null ? '—' : '₹' + Math.round(Math.abs(v)).toLocaleString('en-IN');
@@ -37,6 +127,9 @@ const inrK = v => {
 };
 const pct = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
 const f4 = v => +parseFloat(v).toFixed(4);
+
+// ── Import state ──────────────────────────────────────────────────────────────
+let importParseResult = null;
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -52,6 +145,21 @@ async function api(method, path, body) {
     throw new Error(err.detail || res.statusText);
   }
   if (res.status === 204) return null;
+  return res.json();
+}
+
+async function apiUpload(path, formData) {
+  const headers = {};
+  if (_session?.access_token) headers['Authorization'] = 'Bearer ' + _session.access_token;
+  const res = await fetch('/api/v1' + path, { method: 'POST', headers, body: formData });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    const detail = err.detail;
+    const msg = Array.isArray(detail)
+      ? detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+      : (detail || res.statusText);
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -365,7 +473,7 @@ function renderPositions() {
             <span class="group-name">${group.category}</span>
           </div>
           <div class="group-meta">
-            ${multiPos ? `<span class="count-pill">${group.positions.length} positions</span>` : `<span class="ticker-tag">${group.positions[0]?.ticker || ''}</span>`}
+            ${multiPos ? `<span class="count-pill">${group.positions.length} positions</span>` : `<span style="font-size:12px;color:var(--muted)">${group.positions[0] ? displayName(group.positions[0]) : ''}</span>`}
             <div class="weight-bar-wrap"><div class="weight-bar" style="width:${Math.min((portPct || 0) * 2.5, 100)}%"></div></div>
           </div>
         </div>
@@ -390,7 +498,7 @@ function renderPositions() {
         renderPositions();
       });
     } else if (group.positions[0]) {
-      tr.addEventListener('click', () => showView('transactions', group.positions[0].ticker));
+      tr.addEventListener('click', () => showView('transactions', group.positions[0].ticker_id));
     }
 
     tbody.appendChild(tr);
@@ -403,8 +511,7 @@ function renderPositions() {
         sub.innerHTML = `
           <td colspan="2">
             <div style="display:flex;align-items:center;gap:8px">
-              <span class="ticker-tag">${pos.ticker}</span>
-              <span style="font-size:11px;color:var(--muted2)">${pos.display_name || pos.name}</span>
+              <span style="font-size:11px;color:var(--muted2)">${displayName(pos)}</span>
             </div>
           </td>
           <td class="num" style="color:var(--muted);font-size:10px">${pos.weight_pct != null ? pos.weight_pct.toFixed(1) + '%' : '—'}</td>
@@ -414,7 +521,7 @@ function renderPositions() {
           <td class="num"><span style="font-family:var(--mono);font-size:12px;color:var(--muted2)">${pos.currency === 'USD' ? '$' : '₹'}${pos.avg_buy_price.toFixed(2)}</span></td>
           <td class="num"><span style="font-family:var(--mono);font-size:12px;color:var(--muted2)">${f4(pos.held_units)}</span></td>
         `;
-        sub.addEventListener('click', () => showView('transactions', pos.ticker));
+        sub.addEventListener('click', () => showView('transactions', pos.ticker_id));
         tbody.appendChild(sub);
       }
     }
@@ -642,7 +749,7 @@ function renderTransactions() {
   let txns = state.transactions;
 
   if (state.txnTickerFilter) {
-    txns = txns.filter(t => t.ticker === state.txnTickerFilter);
+    txns = txns.filter(t => t.ticker_id === state.txnTickerFilter);
   }
   if (brokerFilter) txns = txns.filter(t => t.broker_id === brokerFilter);
   if (typeFilter) txns = txns.filter(t => t.type === typeFilter);
@@ -652,24 +759,23 @@ function renderTransactions() {
     txns = txns.filter(t => new Date(t.date) >= cutoff);
   }
 
+  const filterTicker = state.txnTickerFilter
+    ? state.tickers.find(tk => tk.id === state.txnTickerFilter) : null;
   document.getElementById('txn-sub').textContent =
-    `${txns.length} transactions${state.txnTickerFilter ? ' · filtered by ' + state.txnTickerFilter : ''}`;
+    `${txns.length} transactions${filterTicker ? ' · filtered by ' + displayName(filterTicker) : ''}`;
 
   const tbody = document.getElementById('txn-tbody');
   tbody.innerHTML = '';
 
   for (const t of txns) {
     const tr = document.createElement('tr');
-    const ticker = state.tickers.find(tk => tk.ticker === t.ticker);
+    const ticker = state.tickers.find(tk => tk.id === t.ticker_id);
     const cur = ticker?.currency || 'INR';
     const sym = cur === 'USD' ? '$' : '₹';
     tr.innerHTML = `
       <td style="font-family:var(--mono);font-size:12px;color:var(--muted2)">${t.date}</td>
       <td>
-        <div style="display:flex;align-items:center;gap:7px">
-          <span class="ticker-tag">${t.ticker}</span>
-          <span style="font-size:11px;color:var(--muted)">${displayName(ticker)}</span>
-        </div>
+        <span style="font-size:12px;color:var(--muted2)">${t.ticker_name || displayName(ticker)}</span>
       </td>
       <td><span class="txn-type type-${t.type}">${t.type}</span></td>
       <td class="num">${f4(t.units)}</td>
@@ -711,19 +817,18 @@ function renderPrices() {
   });
 
   for (const p of sorted) {
-    const ticker = state.tickers.find(t => t.ticker === p.ticker);
+    const ticker = state.tickers.find(t => t.id === p.ticker_id);
     const cur = ticker?.currency || 'INR';
     const sym = cur === 'USD' ? '$' : '₹';
     const isStale = !p.updated_at;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><span class="ticker-tag">${p.ticker}</span></td>
       <td style="font-size:12px;color:var(--muted2)">${displayName(ticker) || '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${cur}</td>
       <td class="num">
         ${sym}<input class="price-input${isStale ? ' price-stale' : ''}"
           type="number" step="any" value="${p.price}"
-          data-ticker="${p.ticker}" data-orig="${p.price}">
+          data-ticker-id="${p.ticker_id}" data-orig="${p.price}">
       </td>
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">
         ${p.updated_at ? new Date(p.updated_at).toLocaleString() : '<span style="color:var(--red)">never</span>'}
@@ -737,7 +842,7 @@ function renderPrices() {
       const v = parseFloat(input.value);
       if (!v || v <= 0 || v === parseFloat(input.dataset.orig)) return;
       try {
-        await api('PUT', `/prices/${input.dataset.ticker}`, { price: v });
+        await api('PUT', `/prices/${input.dataset.tickerId}`, { price: v });
         input.dataset.orig = v;
         input.classList.remove('price-stale');
         // Refresh positions
@@ -746,7 +851,8 @@ function renderPrices() {
         await api('GET', '/prices/detail').then(d => { state.pricesDetail = d; });
         renderPositions();
         renderInsights();
-        showToast(`Price updated: ${input.dataset.ticker}`);
+        const updatedTicker = state.tickers.find(t => t.id === parseInt(input.dataset.tickerId));
+        showToast(`Price updated: ${displayName(updatedTicker)}`);
       } catch (err) {
         showToast('Error: ' + err.message, 'error');
       }
@@ -762,6 +868,7 @@ function renderAddForm() {
   for (const c of state.categories) {
     catSel.innerHTML += `<option value="${c.id}">${c.name}</option>`;
   }
+  attachSelectAdd(catSel, 'category');
 
   // Populate sector dropdown
   const secSel = document.getElementById('new-ticker-sector');
@@ -769,12 +876,13 @@ function renderAddForm() {
   for (const s of state.sectors) {
     secSel.innerHTML += `<option value="${s.id}">${s.name}</option>`;
   }
+  attachSelectAdd(secSel, 'sector');
 
   // Populate ticker dropdown for transaction
   const tkSel = document.getElementById('new-txn-ticker');
   tkSel.innerHTML = '';
-  for (const t of state.tickers.sort((a, b) => a.ticker.localeCompare(b.ticker))) {
-    tkSel.innerHTML += `<option value="${t.ticker}" data-currency="${t.currency}">${t.ticker} — ${displayName(t)}</option>`;
+  for (const t of [...state.tickers].sort((a, b) => displayName(a).localeCompare(displayName(b)))) {
+    tkSel.innerHTML += `<option value="${t.id}" data-currency="${t.currency}">${displayName(t)}</option>`;
   }
 
   // Populate broker dropdown for transaction
@@ -813,6 +921,7 @@ function renderAddForm() {
 
   document.getElementById('new-txn-units').addEventListener('input', updatePreview);
   document.getElementById('new-txn-price').addEventListener('input', updatePreview);
+
 }
 
 function setupAddForm() {
@@ -821,28 +930,30 @@ function setupAddForm() {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.add-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
+      const isTxn = tab.dataset.tab === 'transaction';
       document.getElementById('add-ticker-form').style.display = tab.dataset.tab === 'ticker' ? '' : 'none';
-      document.getElementById('add-txn-form').style.display = tab.dataset.tab === 'transaction' ? '' : 'none';
+      document.getElementById('add-txn-form').style.display = isTxn ? '' : 'none';
+      document.getElementById('import-upload-card').style.display = isTxn ? '' : 'none';
+      document.getElementById('import-review-card').style.display = 'none';
+      document.getElementById('import-divider').style.display = isTxn ? '' : 'none';
     });
   });
 
   // Add ticker
   document.getElementById('btn-add-ticker').addEventListener('click', async () => {
-    const symbol = document.getElementById('new-ticker-symbol').value.trim().toUpperCase();
     const name = document.getElementById('new-ticker-name').value.trim();
-    const display_name = document.getElementById('new-ticker-display-name').value.trim() || null;
+    const short_name = document.getElementById('new-ticker-display-name').value.trim() || null;
     const currency = document.getElementById('new-ticker-currency').value;
     const category_id = parseInt(document.getElementById('new-ticker-category').value);
     const sector_id = parseInt(document.getElementById('new-ticker-sector').value);
 
-    if (!symbol || !name) return showToast('Ticker and name are required', 'error');
+    if (!name) return showToast('Name is required', 'error');
 
     try {
-      await api('POST', '/tickers', { ticker: symbol, name, display_name, currency, category_id, sector_id });
+      await api('POST', '/tickers', { name, short_name, currency, category_id, sector_id });
       state.tickers = await api('GET', '/tickers');
       renderAddForm();
-      showToast(`Ticker ${symbol} added`);
-      document.getElementById('new-ticker-symbol').value = '';
+      showToast(`Ticker "${name}" added`);
       document.getElementById('new-ticker-name').value = '';
       document.getElementById('new-ticker-display-name').value = '';
     } catch (err) {
@@ -852,30 +963,200 @@ function setupAddForm() {
 
   // Add transaction
   document.getElementById('btn-add-txn').addEventListener('click', async () => {
-    const ticker = document.getElementById('new-txn-ticker').value;
+    const ticker_id = parseInt(document.getElementById('new-txn-ticker').value);
     const type = document.getElementById('new-txn-type').value;
     const date = document.getElementById('new-txn-date').value;
     const units = parseFloat(document.getElementById('new-txn-units').value);
     const price = parseFloat(document.getElementById('new-txn-price').value);
     const broker_id = parseInt(document.getElementById('new-txn-broker').value);
 
-    if (!ticker || !date || !units || !price) return showToast('All fields required', 'error');
+    if (!ticker_id || !date || !units || !price) return showToast('All fields required', 'error');
 
     try {
-      await api('POST', '/transactions', { ticker, type, date, units, price, broker_id });
+      await api('POST', '/transactions', { ticker_id, type, date, units, price, broker_id });
       const [txns] = await Promise.all([
         api('GET', '/transactions'),
         fetchPositions(),
       ]);
       state.transactions = txns;
       renderAll();
-      showToast(`Transaction added: ${type} ${units} ${ticker}`);
+      const txnTicker = state.tickers.find(t => t.id === ticker_id);
+      showToast(`Transaction added: ${type} ${units} ${displayName(txnTicker)}`);
       document.getElementById('new-txn-units').value = '';
       document.getElementById('new-txn-price').value = '';
     } catch (err) {
       showToast('Error: ' + err.message, 'error');
     }
   });
+
+  setupImportSection();
+}
+
+// ── Import flow ───────────────────────────────────────────────────────────────
+function setupImportSection() {
+  // Parse file
+  document.getElementById('btn-parse-file').onclick = async () => {
+    const fileInput = document.getElementById('import-file');
+    const currency = document.getElementById('import-currency').value;
+    if (!fileInput.files.length) return showToast('Please select a file', 'error');
+
+    const btn = document.getElementById('btn-parse-file');
+    btn.disabled = true;
+    btn.textContent = 'Parsing…';
+    try {
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      fd.append('currency', currency);
+      importParseResult = await apiUpload('/import/parse', fd);
+      renderImportReview(importParseResult, currency);
+    } catch (err) {
+      showToast('Parse error: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Parse file';
+    }
+  };
+
+  // Back button
+  document.getElementById('btn-import-back').onclick = () => {
+    document.getElementById('import-review-card').style.display = 'none';
+    document.getElementById('import-upload-card').style.display = '';
+  };
+}
+
+function renderImportReview(result, currency) {
+  const total = result.transactions.length;
+  const dupes = result.transactions.filter(t => t.status === 'duplicate').length;
+  const newCount = total - dupes;
+  const newFunds = result.unresolved_funds.length;
+
+  // Summary banner
+  document.getElementById('import-summary-banner').innerHTML =
+    `<strong>${total}</strong> transactions found &nbsp;·&nbsp; ` +
+    `<strong>${dupes}</strong> duplicates &nbsp;·&nbsp; ` +
+    `<strong>${newFunds}</strong> new fund${newFunds !== 1 ? 's' : ''}`;
+
+  // Unresolved fund panels
+  const unresolvedEl = document.getElementById('import-unresolved');
+  unresolvedEl.innerHTML = '';
+  for (const fundName of result.unresolved_funds) {
+    const panel = document.createElement('div');
+    panel.className = 'import-unresolved-panel';
+    panel.dataset.fund = fundName;
+    const catOptions = state.categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    const secOptions = state.sectors.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+    panel.innerHTML = `
+      <div class="fund-name">⚠ Unresolved: <strong>${fundName}</strong></div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Short name <span style="opacity:.5">(optional)</span></label>
+          <input type="text" class="resolve-display-name" placeholder="Abbreviated name">
+        </div>
+        <div class="form-group">
+          <label>Category <span style="color:var(--red)">*</span></label>
+          <select class="resolve-category">${catOptions}</select>
+        </div>
+        <div class="form-group">
+          <label>Sector <span style="color:var(--red)">*</span></label>
+          <select class="resolve-sector">${secOptions}</select>
+        </div>
+      </div>`;
+    panel.querySelectorAll('input, select').forEach(el => el.addEventListener('input', updateImportConfirmBtn));
+    unresolvedEl.appendChild(panel);
+    attachSelectAdd(panel.querySelector('.resolve-category'), 'category');
+    attachSelectAdd(panel.querySelector('.resolve-sector'), 'sector');
+  }
+
+  // Transaction table
+  const tbody = document.getElementById('import-txn-tbody');
+  tbody.innerHTML = '';
+  result.transactions.forEach((t, i) => {
+    const isDupe = t.status === 'duplicate';
+    const tr = document.createElement('tr');
+    if (isDupe) tr.classList.add('is-duplicate');
+    tr.innerHTML = `
+      <td><input type="checkbox" data-idx="${i}" ${isDupe ? '' : 'checked'} ${isDupe ? 'disabled' : ''}></td>
+      <td style="font-family:var(--mono);font-size:11px">${t.date}</td>
+      <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.name}">${t.name}</td>
+      <td><span class="txn-type type-${t.type}">${t.type}</span></td>
+      <td class="num" style="font-family:var(--mono);font-size:11px">${t.units.toFixed(3)}</td>
+      <td class="num" style="font-family:var(--mono);font-size:11px">${t.price.toFixed(3)}</td>
+      <td class="num" style="font-family:var(--mono);font-size:11px">${Math.round(t.amount).toLocaleString('en-IN')}</td>
+      <td style="font-size:11px;color:var(--muted)">${t.currency}</td>
+      <td><span class="status-${t.status}">${t.status}</span></td>`;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('input[type=checkbox]').forEach(cb =>
+    cb.addEventListener('change', updateImportConfirmBtn)
+  );
+
+  // Show review, hide upload
+  document.getElementById('import-upload-card').style.display = 'none';
+  document.getElementById('import-review-card').style.display = '';
+  updateImportConfirmBtn();
+
+  // Confirm handler (set fresh each render)
+  const confirmBtn = document.getElementById('btn-import-confirm');
+  confirmBtn.onclick = async () => {
+    const checkedBoxes = [...tbody.querySelectorAll('input[type=checkbox]:checked')];
+    const checkedTxns = checkedBoxes.map(cb => {
+      const t = result.transactions[parseInt(cb.dataset.idx)];
+      return { fund_name: t.name, date: t.date, type: t.type, units: t.units, price: t.price, amount: t.amount };
+    });
+
+    const newTickers = [...unresolvedEl.querySelectorAll('.import-unresolved-panel')].map(panel => ({
+      name: panel.dataset.fund,
+      short_name: panel.querySelector('.resolve-display-name').value.trim() || null,
+      category_id: parseInt(panel.querySelector('.resolve-category').value),
+      sector_id: parseInt(panel.querySelector('.resolve-sector').value),
+    }));
+
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Importing…';
+    try {
+      const res = await api('POST', '/import/confirm', {
+        currency,
+        new_tickers: newTickers,
+        transactions: checkedTxns,
+      });
+      showToast(`${res.imported} imported · ${res.skipped} skipped`);
+      // Refresh data and reset to upload view
+      const [txns] = await Promise.all([api('GET', '/transactions'), fetchPositions()]);
+      state.transactions = txns;
+      if (activeView === 'transactions') renderTransactions();
+      state.tickers = await api('GET', '/tickers');
+      importParseResult = null;
+      document.getElementById('import-review-card').style.display = 'none';
+      document.getElementById('import-upload-card').style.display = '';
+      document.getElementById('import-file').value = '';
+    } catch (err) {
+      showToast('Import error: ' + err.message, 'error');
+    } finally {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = updateImportConfirmBtn() || 'Import transactions';
+    }
+  };
+}
+
+function updateImportConfirmBtn() {
+  const tbody = document.getElementById('import-txn-tbody');
+  const unresolvedEl = document.getElementById('import-unresolved');
+  if (!tbody) return;
+
+  const checkedCount = tbody.querySelectorAll('input[type=checkbox]:checked').length;
+
+  // Check all unresolved panels have a category selected
+  const panels = [...unresolvedEl.querySelectorAll('.import-unresolved-panel')];
+  const allResolved = panels.every(panel =>
+    panel.querySelector('.resolve-category').value
+  );
+
+  const btn = document.getElementById('btn-import-confirm');
+  if (!btn) return;
+  btn.disabled = checkedCount === 0 || !allResolved;
+  btn.textContent = `Import ${checkedCount} transaction${checkedCount !== 1 ? 's' : ''}`;
+  return btn.textContent;
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

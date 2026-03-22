@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import jwt as pyjwt
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
@@ -12,6 +12,7 @@ import models
 import schemas
 from auth import get_current_user
 from database import engine, get_db
+from parsers import groww_mf
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -70,9 +71,9 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def get_display_name(ticker_obj) -> str:
-    """Return display_name if set, otherwise fall back to name."""
-    return ticker_obj.display_name or ticker_obj.name
+def get_short_name(ticker_obj) -> str:
+    """Return short_name if set, otherwise fall back to name."""
+    return ticker_obj.short_name or ticker_obj.name
 
 
 def historical_fx(date_str: str, fx_rows: list) -> float:
@@ -98,20 +99,20 @@ def get_positions(
         fx_rate = float(cfg.value) if cfg else 86.0
 
     transactions = db.query(models.Transaction).filter_by(user_id=user_id).all()
-    tickers_map = {t.ticker: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
-    prices_map = {p.ticker: p.price for p in db.query(models.Price).filter_by(user_id=user_id).all()}
+    tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
+    prices_map = {p.ticker_id: p.price for p in db.query(models.Price).filter_by(user_id=user_id).all()}
     fx_rows = db.query(models.FxHistory).filter_by(user_id=user_id).all()
     categories_map = {c.id: c for c in db.query(models.Category).filter_by(user_id=user_id).all()}
     sectors_map = {s.id: s for s in db.query(models.Sector).filter_by(user_id=user_id).all()}
 
-    # Group transactions by ticker
-    txn_by_ticker: dict[str, list] = {}
+    # Group transactions by ticker_id
+    txn_by_ticker_id: dict[int, list] = {}
     for t in transactions:
-        txn_by_ticker.setdefault(t.ticker, []).append(t)
+        txn_by_ticker_id.setdefault(t.ticker_id, []).append(t)
 
     positions = []
-    for ticker, txns in txn_by_ticker.items():
-        ticker_obj = tickers_map.get(ticker)
+    for ticker_id, txns in txn_by_ticker_id.items():
+        ticker_obj = tickers_map.get(ticker_id)
         if not ticker_obj:
             continue
         currency = ticker_obj.currency
@@ -140,7 +141,7 @@ def get_positions(
         total_cost_native = sum(t.units * t.price for t in buys)
         avg_buy_price = total_cost_native / buy_units if buy_units > 0 else 0
 
-        current_price = prices_map.get(ticker)
+        current_price = prices_map.get(ticker_id)
         if current_price is not None:
             value_inr = held_units * current_price * (fx_rate if currency == "USD" else 1)
             pnl_inr = value_inr - invested_inr
@@ -155,9 +156,9 @@ def get_positions(
             sector_name = sectors_map[ticker_obj.sector_id].name
 
         positions.append({
-            "ticker": ticker,
-            "name": get_display_name(ticker_obj),
-            "display_name": ticker_obj.display_name,
+            "ticker_id": ticker_id,
+            "name": get_short_name(ticker_obj),
+            "short_name": ticker_obj.short_name,
             "currency": currency,
             "category_id": ticker_obj.category_id,
             "sector": sector_name,
@@ -227,9 +228,9 @@ def get_positions(
             g["invested_known"] += p["invested_inr"]
             g["has_prices"] = True
         g["positions"].append(schemas.PositionItem(
-            ticker=p["ticker"],
+            ticker_id=p["ticker_id"],
             name=p["name"],
-            display_name=p["display_name"],
+            short_name=p["short_name"],
             sector=p["sector"],
             held_units=p["held_units"],
             avg_buy_price=p["avg_buy_price"],
@@ -281,9 +282,9 @@ def get_tickers(
     result = []
     for t in tickers:
         result.append({
-            "ticker": t.ticker,
+            "id": t.id,
             "name": t.name,
-            "display_name": t.display_name,
+            "short_name": t.short_name,
             "currency": t.currency,
             "category_id": t.category_id,
             "sector_id": t.sector_id,
@@ -299,14 +300,13 @@ def create_ticker(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    existing = db.query(models.Ticker).filter_by(user_id=user_id, ticker=payload.ticker).first()
+    existing = db.query(models.Ticker).filter_by(user_id=user_id, name=payload.name).first()
     if existing:
         raise HTTPException(status_code=409, detail="Ticker already exists")
     t = models.Ticker(
         user_id=user_id,
-        ticker=payload.ticker,
         name=payload.name,
-        display_name=payload.display_name or None,
+        short_name=payload.short_name or None,
         currency=payload.currency,
         category_id=payload.category_id,
         sector_id=payload.sector_id,
@@ -315,15 +315,132 @@ def create_ticker(
     db.add(t)
     db.commit()
     db.refresh(t)
-    return {"ticker": t.ticker, "name": t.name, "display_name": t.display_name,
+    return {"id": t.id, "name": t.name, "short_name": t.short_name,
             "currency": t.currency, "category_id": t.category_id, "sector_id": t.sector_id}
+
+
+# ── Import ────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/import/parse")
+async def import_parse(
+    file: UploadFile = File(...),
+    currency: str = Form(...),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    file_bytes = await file.read()
+    try:
+        rows = groww_mf.parse(file_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse file: {e}")
+
+    # Build name→ticker lookup for this user
+    tickers = db.query(models.Ticker).filter_by(user_id=user_id).all()
+    tickers_by_name = {t.name.lower(): t for t in tickers}
+
+    result_txns = []
+    unresolved_set = []
+
+    for row in rows:
+        name_lower = row['name'].lower()
+        ticker_obj = tickers_by_name.get(name_lower)
+        ticker_id = ticker_obj.id if ticker_obj else None
+
+        if ticker_obj:
+            # Dedup: match on ticker_id + date + type + amount
+            existing = db.query(models.Transaction).filter_by(
+                user_id=user_id,
+                ticker_id=ticker_id,
+                date=row['date'],
+                type=row['type'],
+            ).filter(models.Transaction.amount == row['amount']).first()
+            status = "duplicate" if existing else "new"
+        else:
+            status = "new"
+            if row['name'] not in unresolved_set:
+                unresolved_set.append(row['name'])
+
+        result_txns.append({
+            "name": row['name'],
+            "date": row['date'],
+            "type": row['type'],
+            "units": row['units'],
+            "price": row['price'],
+            "amount": row['amount'],
+            "currency": currency,
+            "ticker_id": ticker_id,
+            "status": status,
+        })
+
+    return {"transactions": result_txns, "unresolved_funds": unresolved_set}
+
+
+@app.post("/api/v1/import/confirm")
+def import_confirm(
+    payload: schemas.ImportConfirmPayload,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    # Step 1: create new tickers (DB unique constraint on (user_id, name) handles dedup)
+    for nt in payload.new_tickers:
+        t = models.Ticker(
+            user_id=user_id,
+            name=nt.name,
+            short_name=nt.short_name or None,
+            currency=payload.currency,
+            category_id=nt.category_id,
+            sector_id=nt.sector_id,
+            created_at=now_iso(),
+        )
+        db.add(t)
+    db.commit()
+
+    # Rebuild name lookup (includes newly created tickers)
+    tickers_by_name = {t.name.lower(): t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
+
+    # Step 2: insert transactions (re-dedup)
+    imported = 0
+    skipped = 0
+    for txn in payload.transactions:
+        # Resolve ticker_id from fund name
+        ticker_obj = tickers_by_name.get(txn.fund_name.lower())
+        if not ticker_obj:
+            skipped += 1
+            continue
+        ticker_id = ticker_obj.id
+        # Dedup check
+        existing = db.query(models.Transaction).filter_by(
+            user_id=user_id,
+            ticker_id=ticker_id,
+            date=txn.date,
+            type=txn.type,
+        ).filter(models.Transaction.amount == txn.amount).first()
+        if existing:
+            skipped += 1
+            continue
+        t = models.Transaction(
+            user_id=user_id,
+            date=txn.date,
+            ticker_id=ticker_id,
+            type=txn.type,
+            units=txn.units,
+            price=txn.price,
+            amount=txn.amount,
+            broker_id=payload.broker_id,
+            created_at=now_iso(),
+        )
+        db.add(t)
+        imported += 1
+
+    db.commit()
+    return {"imported": imported, "skipped": skipped}
 
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/transactions")
 def get_transactions(
-    ticker: Optional[str] = None,
+    ticker_id: Optional[int] = None,
     broker_id: Optional[int] = None,
     type: Optional[str] = None,
     days: Optional[int] = None,
@@ -331,8 +448,8 @@ def get_transactions(
     user_id: str = Depends(get_current_user),
 ):
     q = db.query(models.Transaction).filter_by(user_id=user_id)
-    if ticker:
-        q = q.filter(models.Transaction.ticker == ticker)
+    if ticker_id:
+        q = q.filter(models.Transaction.ticker_id == ticker_id)
     if broker_id:
         q = q.filter(models.Transaction.broker_id == broker_id)
     if type:
@@ -344,12 +461,15 @@ def get_transactions(
 
     txns = q.order_by(models.Transaction.date.desc()).all()
     brokers = {b.id: b.name for b in db.query(models.Broker).filter_by(user_id=user_id).all()}
+    tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
     result = []
     for t in txns:
+        ticker_obj = tickers_map.get(t.ticker_id)
         result.append({
             "id": t.id,
             "date": t.date,
-            "ticker": t.ticker,
+            "ticker_id": t.ticker_id,
+            "ticker_name": get_short_name(ticker_obj) if ticker_obj else None,
             "type": t.type,
             "units": t.units,
             "price": t.price,
@@ -367,13 +487,13 @@ def create_transaction(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    ticker_obj = db.query(models.Ticker).filter_by(user_id=user_id, ticker=payload.ticker).first()
+    ticker_obj = db.query(models.Ticker).filter_by(user_id=user_id, id=payload.ticker_id).first()
     if not ticker_obj:
         raise HTTPException(status_code=404, detail="Ticker not found")
     t = models.Transaction(
         user_id=user_id,
         date=payload.date,
-        ticker=payload.ticker,
+        ticker_id=payload.ticker_id,
         type=payload.type,
         units=payload.units,
         price=payload.price,
@@ -384,7 +504,7 @@ def create_transaction(
     db.add(t)
     db.commit()
     db.refresh(t)
-    return {"id": t.id, "date": t.date, "ticker": t.ticker, "type": t.type,
+    return {"id": t.id, "date": t.date, "ticker_id": t.ticker_id, "type": t.type,
             "units": t.units, "price": t.price, "amount": t.amount, "broker_id": t.broker_id}
 
 
@@ -409,25 +529,25 @@ def get_prices(
     user_id: str = Depends(get_current_user),
 ):
     prices = db.query(models.Price).filter_by(user_id=user_id).all()
-    return {p.ticker: p.price for p in prices}
+    return {str(p.ticker_id): p.price for p in prices}
 
 
-@app.put("/api/v1/prices/{ticker}")
+@app.put("/api/v1/prices/{ticker_id}")
 def update_price(
-    ticker: str,
+    ticker_id: int,
     payload: schemas.PriceUpdate,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    p = db.query(models.Price).filter_by(user_id=user_id, ticker=ticker).first()
+    p = db.query(models.Price).filter_by(user_id=user_id, ticker_id=ticker_id).first()
     if p:
         p.price = payload.price
         p.updated_at = now_iso()
     else:
-        p = models.Price(user_id=user_id, ticker=ticker, price=payload.price, updated_at=now_iso())
+        p = models.Price(user_id=user_id, ticker_id=ticker_id, price=payload.price, updated_at=now_iso())
         db.add(p)
     db.commit()
-    return {"ticker": ticker, "price": payload.price, "updated_at": p.updated_at}
+    return {"ticker_id": ticker_id, "price": payload.price, "updated_at": p.updated_at}
 
 
 @app.get("/api/v1/prices/detail")
@@ -436,7 +556,7 @@ def get_prices_detail(
     user_id: str = Depends(get_current_user),
 ):
     prices = db.query(models.Price).filter_by(user_id=user_id).all()
-    return [{"ticker": p.ticker, "price": p.price, "updated_at": p.updated_at} for p in prices]
+    return [{"ticker_id": p.ticker_id, "price": p.price, "updated_at": p.updated_at} for p in prices]
 
 
 # ── Categories ────────────────────────────────────────────────────────────────

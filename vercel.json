@@ -1,4 +1,4 @@
 {
-  "builds": [{ "src": "main.py", "use": "@vercel/python", "config": { "includeFiles": ["frontend/**"] } }],
+  "builds": [{ "src": "main.py", "use": "@vercel/python", "config": { "includeFiles": ["frontend/**", "parsers/**"] } }],
   "routes": [{ "src": "/(.*)", "dest": "main.py" }]
 }

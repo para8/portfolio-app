@@ -216,7 +216,7 @@
         <thead>
           <tr>
             <th>Date</th>
-            <th>Ticker</th>
+            <th>Fund</th>
             <th>Type</th>
             <th class="num">Units</th>
             <th class="num">Price</th>
@@ -242,8 +242,7 @@
       <table>
         <thead>
           <tr>
-            <th>Ticker</th>
-            <th>Name</th>
+            <th>Fund</th>
             <th>Currency</th>
             <th class="num">Price</th>
             <th>Last Updated</th>
@@ -264,24 +263,20 @@
     </div>
 
     <div class="add-tabs">
-      <button class="add-tab active" data-tab="ticker">Add Ticker</button>
+      <button class="add-tab active" data-tab="ticker">Add Fund</button>
       <button class="add-tab" data-tab="transaction">Add Transaction</button>
     </div>
 
     <!-- Add Ticker -->
     <div class="form-card" id="add-ticker-form">
       <div class="form-grid">
-        <div class="form-group">
-          <label>Ticker Symbol</label>
-          <input type="text" id="new-ticker-symbol" placeholder="e.g. RELIANCE">
-        </div>
-        <div class="form-group">
+        <div class="form-group full">
           <label>Name</label>
-          <input type="text" id="new-ticker-name" placeholder="Full name">
+          <input type="text" id="new-ticker-name" placeholder="Full fund/stock name">
         </div>
         <div class="form-group">
-          <label>Display name <span style="opacity:.5;font-weight:400">(optional)</span></label>
-          <input type="text" id="new-ticker-display-name" placeholder="Short name shown in UI">
+          <label>Short name <span style="opacity:.5;font-weight:400">(optional)</span></label>
+          <input type="text" id="new-ticker-display-name" placeholder="Abbreviated name shown in UI">
         </div>
         <div class="form-group">
           <label>Currency</label>
@@ -299,14 +294,63 @@
           <select id="new-ticker-sector"></select>
         </div>
       </div>
-      <button class="btn-submit" id="btn-add-ticker">Add Ticker</button>
+      <button class="btn-submit" id="btn-add-ticker">Add Fund</button>
     </div>
+
+    <!-- Import from broker -->
+    <div id="import-upload-card" class="form-card" style="display:none">
+      <div class="import-section-title">Import from broker</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Source</label>
+          <select id="import-source">
+            <option value="groww_mf">Groww MFs</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Currency</label>
+          <select id="import-currency">
+            <option value="INR">INR</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label>File (.xlsx)</label>
+          <input type="file" id="import-file" accept=".xlsx">
+        </div>
+      </div>
+      <button class="btn-submit" id="btn-parse-file">Parse file</button>
+    </div>
+
+    <!-- Import review screen -->
+    <div id="import-review-card" class="form-card" style="display:none">
+      <div id="import-summary-banner" class="import-banner"></div>
+      <div id="import-unresolved"></div>
+      <div class="import-table-wrap">
+        <table class="import-table">
+          <thead>
+            <tr>
+              <th></th><th>Date</th><th>Fund</th><th>Type</th>
+              <th class="num">Units</th><th class="num">Price</th>
+              <th class="num">Amount</th><th>Curr.</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="import-txn-tbody"></tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button class="btn-secondary" id="btn-import-back">← Back</button>
+        <button class="btn-submit" id="btn-import-confirm" style="flex:1">Import transactions</button>
+      </div>
+    </div>
+
+    <div class="import-divider" id="import-divider" style="display:none"></div>
 
     <!-- Add Transaction -->
     <div class="form-card" id="add-txn-form" style="display:none">
       <div class="form-grid">
         <div class="form-group">
-          <label>Ticker</label>
+          <label>Fund</label>
           <select id="new-txn-ticker"></select>
         </div>
         <div class="form-group">
