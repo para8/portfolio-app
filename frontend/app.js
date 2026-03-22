@@ -46,33 +46,17 @@ function refreshAllSelectsOfType(type, newId) {
   });
 }
 
+// Expects the DOM structure (in HTML or built dynamically) to already contain:
+//   .select-add-wrap > select + .btn-add-opt
+//   .add-opt-inline > .add-opt-input + .add-opt-error + .add-opt-submit
+// (sibling of .select-add-wrap)
 function attachSelectAdd(selectEl, type) {
   if (!selectEl || selectEl.dataset.addAttached) return;
   selectEl.dataset.addAttached = '1';
 
-  // Wrap select + "+" button
-  const wrap = document.createElement('div');
-  wrap.className = 'select-add-wrap';
-  selectEl.parentNode.insertBefore(wrap, selectEl);
-  wrap.appendChild(selectEl);
-
-  const plusBtn = document.createElement('button');
-  plusBtn.type = 'button';
-  plusBtn.className = 'btn-add-opt';
-  plusBtn.title = `Add new ${type}`;
-  plusBtn.textContent = '+';
-  wrap.appendChild(plusBtn);
-
-  // Inline form (hidden by default)
-  const inline = document.createElement('div');
-  inline.className = 'add-opt-inline';
-  inline.innerHTML = `
-    <input type="text" class="add-opt-input" placeholder="New ${type} name">
-    <span class="add-opt-error"></span>
-    <button type="button" class="add-opt-submit" disabled>Add</button>
-  `;
-  wrap.parentNode.insertBefore(inline, wrap.nextSibling);
-
+  const wrap = selectEl.closest('.select-add-wrap');
+  const inline = wrap.nextElementSibling;
+  const plusBtn = wrap.querySelector('.btn-add-opt');
   const input = inline.querySelector('.add-opt-input');
   const error = inline.querySelector('.add-opt-error');
   const submitBtn = inline.querySelector('.add-opt-submit');
@@ -1054,11 +1038,27 @@ function renderImportReview(result, currency) {
         </div>
         <div class="form-group">
           <label>Category <span style="color:var(--red)">*</span></label>
-          <select class="resolve-category">${catOptions}</select>
+          <div class="select-add-wrap">
+            <select class="resolve-category">${catOptions}</select>
+            <button type="button" class="btn-add-opt" title="Add new category">+</button>
+          </div>
+          <div class="add-opt-inline">
+            <input type="text" class="add-opt-input" placeholder="New category name">
+            <span class="add-opt-error"></span>
+            <button type="button" class="add-opt-submit" disabled>Add</button>
+          </div>
         </div>
         <div class="form-group">
           <label>Sector <span style="color:var(--red)">*</span></label>
-          <select class="resolve-sector">${secOptions}</select>
+          <div class="select-add-wrap">
+            <select class="resolve-sector">${secOptions}</select>
+            <button type="button" class="btn-add-opt" title="Add new sector">+</button>
+          </div>
+          <div class="add-opt-inline">
+            <input type="text" class="add-opt-input" placeholder="New sector name">
+            <span class="add-opt-error"></span>
+            <button type="button" class="add-opt-submit" disabled>Add</button>
+          </div>
         </div>
       </div>`;
     panel.querySelectorAll('input, select').forEach(el => el.addEventListener('input', updateImportConfirmBtn));

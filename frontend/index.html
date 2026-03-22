@@ -287,11 +287,27 @@
         </div>
         <div class="form-group">
           <label>Category</label>
-          <select id="new-ticker-category"></select>
+          <div class="select-add-wrap">
+            <select id="new-ticker-category"></select>
+            <button type="button" class="btn-add-opt" title="Add new category">+</button>
+          </div>
+          <div class="add-opt-inline">
+            <input type="text" class="add-opt-input" placeholder="New category name">
+            <span class="add-opt-error"></span>
+            <button type="button" class="add-opt-submit" disabled>Add</button>
+          </div>
         </div>
         <div class="form-group full">
           <label>Sector</label>
-          <select id="new-ticker-sector"></select>
+          <div class="select-add-wrap">
+            <select id="new-ticker-sector"></select>
+            <button type="button" class="btn-add-opt" title="Add new sector">+</button>
+          </div>
+          <div class="add-opt-inline">
+            <input type="text" class="add-opt-input" placeholder="New sector name">
+            <span class="add-opt-error"></span>
+            <button type="button" class="add-opt-submit" disabled>Add</button>
+          </div>
         </div>
       </div>
       <button class="btn-submit" id="btn-add-ticker">Add Fund</button>
