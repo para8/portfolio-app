@@ -569,7 +569,7 @@ def get_categories(
     return db.query(models.Category).filter_by(user_id=user_id).all()
 
 
-@app.post("/api/v1/categories", status_code=201)
+@app.post("/api/v1/categories", status_code=201, response_model=schemas.CategoryOut)
 def create_category(
     payload: schemas.CategoryCreate,
     db: Session = Depends(get_db),
@@ -592,7 +592,7 @@ def get_sectors(
     return db.query(models.Sector).filter_by(user_id=user_id).all()
 
 
-@app.post("/api/v1/sectors", status_code=201)
+@app.post("/api/v1/sectors", status_code=201, response_model=schemas.SectorOut)
 def create_sector(
     payload: schemas.SectorCreate,
     db: Session = Depends(get_db),

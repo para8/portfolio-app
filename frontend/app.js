@@ -82,9 +82,9 @@ function attachSelectAdd(selectEl, type) {
   submitBtn.addEventListener('click', async () => {
     const name = input.value.trim();
     if (!name) return;
-    const color = pickAutoColor(type);
     try {
       submitBtn.disabled = true;
+      const color = pickAutoColor(type);
       const created = await api('POST', `/${type === 'category' ? 'categories' : 'sectors'}`, { name, color });
       if (type === 'category') {
         state.categories = await api('GET', '/categories');
