@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 
 
 class CategoryCreate(BaseModel):
@@ -55,6 +55,7 @@ class TickerOut(BaseModel):
     sector_id: Optional[int]
     category_name: Optional[str] = None
     sector_name: Optional[str] = None
+    symbol: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -192,3 +193,47 @@ class PositionsResponse(BaseModel):
     fx_rate: float
     summary: PositionSummary
     by_category: List[CategoryGroup]
+
+
+# ── Live Prices / Price History ───────────────────────────────────────────────
+
+class TickerSymbolUpdate(BaseModel):
+    symbol: str
+
+
+class PriceHistoryFetchRequest(BaseModel):
+    ticker_ids: List[int]
+
+
+class PriceHistoryFetchResult(BaseModel):
+    ticker_id: int
+    symbol: str
+    status: str          # 'success' | 'rate_limited' | 'invalid_symbol' | 'no_symbol' | 'error'
+    rows_stored: int
+    latest_close: Optional[float] = None
+    latest_date: Optional[str] = None
+    error_detail: Optional[str] = None
+
+
+class PriceHistoryFetchResponse(BaseModel):
+    results: List[PriceHistoryFetchResult]
+
+
+class PriceHistoryLatestResult(BaseModel):
+    ticker_id: int
+    symbol: str
+    latest_close: Optional[float] = None
+    latest_date: Optional[str] = None
+
+class PriceHistoryLatestResponse(BaseModel):
+    results: List[PriceHistoryLatestResult]
+
+
+# ── Market Value History Chart ────────────────────────────────────────────────
+
+class MarketValueResponse(BaseModel):
+    months: List[str]           # ['YYYY-MM', ...]
+    invested: List[float]
+    market_value: List[float]
+    partial_months: List[bool]  # True where cost basis used for ≥1 holding
+    has_any_partial: bool       # drives nudge visibility

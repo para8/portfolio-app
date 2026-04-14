@@ -146,6 +146,18 @@ def migrate():
         )
     totals["config"] = len(rows)
 
+    # Reset sequences so that future INSERTs don't collide with migrated IDs.
+    # migrate.py inserts rows with explicit ids (bypassing sequences), so without
+    # this the sequences stay at their initial values and the next ORM insert fails
+    # with a duplicate primary key error.
+    for seq_table in ["categories", "sectors", "tickers", "transactions", "prices", "fx_history", "config"]:
+        try:
+            dst.execute(text(
+                f"SELECT setval('{seq_table}_id_seq', COALESCE((SELECT MAX(id) FROM {seq_table}), 1))"
+            ))
+        except Exception:
+            pass  # table may not have a sequence
+
     dst.commit()
     dst.close()
     src.close()

@@ -21,6 +21,13 @@ const state = {
 let activeView = 'positions';
 let txnDaysFilter = '';
 let pieChart = null;
+let quarterlyChart = null;
+let mvChart = null;
+let mvRawData = null;
+let mvCatIds = null;  // null = All; Set of IDs = explicit selection
+let mvSecIds = null;
+let mvTkrIds = null;
+let mvDropdownsReady = false;
 let expandedGroups = new Set();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -316,7 +323,10 @@ async function init() {
   setupNav();
   setupFxInput();
   setupTransactionFilters();
+  document.getElementById('txn-download-btn').addEventListener('click', downloadTransactionsCSV);
   setupAddForm();
+  setupLivePricesTab();
+  setupNudge();
 
   // Read stored FX rate
   try {
@@ -348,12 +358,15 @@ async function fetchPositions(fxOverride) {
   const url = fxOverride != null ? `/positions?fx_rate=${fxOverride}` : '/positions';
   state.positions = await api('GET', url);
   if (state.positions) state.fxRate = state.positions.fx_rate;
+  quarterlyRawData = null;
+  mvRawData = null;
 }
 
 function renderAll() {
   renderPositions();
   renderInsights();
   renderTransactions();
+  setupPriceFilters();
   renderPrices();
   renderAddForm();
 }
@@ -571,6 +584,8 @@ function renderInsights() {
   if (!state.positions) return;
   buildPieChart();
   buildSectorBars();
+  buildQuarterlyChart();
+  buildMarketValueChart();
 }
 
 function buildPieChart() {
@@ -694,7 +709,187 @@ function buildSectorBars() {
   }
 }
 
+let quarterlyRawData = null;
+let quarterlyPeriod = 'quarterly';
+
+async function buildQuarterlyChart() {
+  if (!quarterlyRawData) {
+    try {
+      quarterlyRawData = await api('GET', '/insights/quarterly-invested');
+    } catch (e) {
+      return;
+    }
+  }
+  if (!quarterlyRawData || !quarterlyRawData.quarters || quarterlyRawData.quarters.length === 0) return;
+
+  // Wire up toggle buttons once
+  document.querySelectorAll('.chart-toggle-btn').forEach(btn => {
+    btn.onclick = () => {
+      quarterlyPeriod = btn.dataset.period;
+      document.querySelectorAll('.chart-toggle-btn').forEach(b => b.classList.toggle('active', b === btn));
+      const sub = document.getElementById('quarterly-chart-sub');
+      sub.textContent = quarterlyPeriod === 'annual'
+        ? 'Cumulative capital deployed by year (net of sells)'
+        : 'Cumulative capital deployed by quarter (net of sells)';
+      renderQuarterlyChart();
+    };
+  });
+
+  renderQuarterlyChart();
+}
+
+function renderQuarterlyChart() {
+  const { quarters, categories } = quarterlyRawData;
+
+  // For annual view: keep only Q4 entries, label as year only
+  let labels, catValues;
+  if (quarterlyPeriod === 'annual') {
+    const indices = quarters.reduce((acc, q, i) => { if (q.endsWith('Q4')) acc.push(i); return acc; }, []);
+    // Also include last quarter if it's not Q4 (current incomplete year)
+    const lastIdx = quarters.length - 1;
+    if (!quarters[lastIdx].endsWith('Q4') && !indices.includes(lastIdx)) indices.push(lastIdx);
+    labels = indices.map(i => quarters[i].split('-')[0]);
+    catValues = categories.map(cat => ({ ...cat, values: indices.map(i => cat.values[i]) }));
+  } else {
+    labels = quarters;
+    catValues = categories;
+  }
+
+  const BAR_W = quarterlyPeriod === 'annual' ? 64 : 52;
+  const MIN_W = 480;
+  const chartW = Math.max(MIN_W, labels.length * BAR_W + 80);
+
+  const canvas = document.getElementById('quarterly-chart');
+  canvas.width = chartW;
+
+  if (quarterlyChart) { quarterlyChart.destroy(); quarterlyChart = null; }
+
+  quarterlyChart = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: catValues.map(cat => ({
+        label: cat.name,
+        data: cat.values,
+        backgroundColor: cat.color + 'cc',
+        borderColor: cat.color,
+        borderWidth: 1,
+        borderRadius: 2,
+        borderSkipped: 'bottom',
+      })),
+    },
+    options: {
+      responsive: false,
+      animation: { duration: 400 },
+      scales: {
+        x: {
+          stacked: true,
+          grid: { display: false },
+          ticks: {
+            font: { size: 10, family: 'var(--mono)' },
+            color: 'var(--muted)',
+            maxRotation: 45,
+          },
+        },
+        y: {
+          stacked: true,
+          grid: { color: 'rgba(128,128,128,0.12)' },
+          ticks: {
+            font: { size: 10, family: 'var(--mono)' },
+            color: 'var(--muted)',
+            callback: v => inrK(v),
+          },
+        },
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            font: { size: 11 },
+            color: 'var(--text)',
+            boxWidth: 12,
+            padding: 14,
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${inrK(ctx.parsed.y)}`,
+            footer: items => {
+              const total = items.reduce((s, i) => s + i.parsed.y, 0);
+              return `Total: ${inrK(total)}`;
+            },
+          },
+        },
+      },
+    },
+    plugins: [{
+      id: 'barTotals',
+      afterDatasetsDraw(chart) {
+        const { ctx, scales: { x, y } } = chart;
+        const nBars = chart.data.labels.length;
+        ctx.save();
+        ctx.font = '10px var(--mono)';
+        ctx.fillStyle = 'var(--muted)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        for (let i = 0; i < nBars; i++) {
+          const total = chart.data.datasets.reduce((s, ds, di) => {
+            if (chart.getDatasetMeta(di).hidden) return s;
+            return s + (ds.data[i] || 0);
+          }, 0);
+          if (total <= 0) continue;
+          const xPos = x.getPixelForValue(i);
+          const yPos = y.getPixelForValue(total);
+          ctx.fillText(inrK(total), xPos, yPos - 4);
+        }
+        ctx.restore();
+      },
+    }],
+  });
+}
+
 // ── Transactions ───────────────────────────────────────────────────────────────
+function downloadTransactionsCSV() {
+  const brokerSel = document.getElementById('txn-broker-filter');
+  const brokerFilter = parseInt(brokerSel.value) || null;
+  const typeFilter = document.getElementById('txn-type-filter').value;
+  const days = txnDaysFilter ? parseInt(txnDaysFilter) : null;
+
+  let txns = state.transactions;
+  if (state.txnTickerFilter) txns = txns.filter(t => t.ticker_id === state.txnTickerFilter);
+  if (brokerFilter) txns = txns.filter(t => t.broker_id === brokerFilter);
+  if (typeFilter) txns = txns.filter(t => t.type === typeFilter);
+  if (days) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    txns = txns.filter(t => new Date(t.date) >= cutoff);
+  }
+
+  const header = ['Date', 'Fund', 'Type', 'Units', 'Price', 'Amount', 'Amount (INR)', 'Broker'];
+  const rows = txns.map(t => {
+    const ticker = state.tickers.find(tk => tk.id === t.ticker_id);
+    const fund = t.ticker_name || displayName(ticker) || '';
+    const units = t.units;
+    const price = t.price;
+    const amount = Math.round(t.amount);
+    return [t.date, fund, t.type, units, price, amount, t.amount_inr != null ? Math.round(t.amount_inr) : '', t.broker_name || ''];
+  });
+
+  const csv = [header, ...rows]
+    .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+
+  const today = new Date().toISOString().slice(0, 10);
+  const filename = `transactions_${today}.csv`;
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function setupTransactionFilters() {
   const brokerSel = document.getElementById('txn-broker-filter');
   const typeSel = document.getElementById('txn-type-filter');
@@ -765,6 +960,7 @@ function renderTransactions() {
       <td class="num">${f4(t.units)}</td>
       <td class="num">${sym}${t.price.toFixed(2)}</td>
       <td class="num">${sym}${Math.round(t.amount).toLocaleString('en-IN')}</td>
+      <td class="num">₹${t.amount_inr != null ? Math.round(t.amount_inr).toLocaleString('en-IN') : '—'}</td>
       <td><span class="broker-pill">${t.broker_name || '—'}</span></td>
       <td><button class="delete-btn" data-id="${t.id}" title="Delete">✕</button></td>
     `;
@@ -789,59 +985,196 @@ function renderTransactions() {
 }
 
 // ── Prices ─────────────────────────────────────────────────────────────────────
+let priceFundFilter = '';
+let priceCategoryFilter = '';
+let priceSectorFilter = '';
+let priceCurrencyFilter = '';
+
 function renderPrices() {
   const tbody = document.getElementById('prices-tbody');
   tbody.innerHTML = '';
 
-  // Sort by updated_at ASC (stalest first), nulls first
-  const sorted = [...state.pricesDetail].sort((a, b) => {
-    if (!a.updated_at) return -1;
-    if (!b.updated_at) return 1;
-    return a.updated_at.localeCompare(b.updated_at);
+  // Build lookup: ticker_id → { price, updated_at }
+  const priceMap = {};
+  for (const p of state.pricesDetail) priceMap[p.ticker_id] = p;
+
+  // Most recent buy transaction price for a ticker (fallback for unpriced tickers)
+  function lastBuy(tickerId) {
+    return state.transactions
+      .filter(t => t.ticker_id === tickerId && t.type === 'Buy')
+      .sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
+  }
+
+  // Apply filters
+  let tickers = state.tickers;
+  if (priceFundFilter) tickers = tickers.filter(t => displayName(t).toLowerCase().includes(priceFundFilter.toLowerCase()));
+  if (priceCategoryFilter) tickers = tickers.filter(t => t.category_id == priceCategoryFilter);
+  if (priceSectorFilter) tickers = tickers.filter(t => t.sector_id == priceSectorFilter);
+  if (priceCurrencyFilter) tickers = tickers.filter(t => t.currency === priceCurrencyFilter);
+
+  // Sort: unpriced first, then by updated_at ASC
+  const sorted = [...tickers].sort((a, b) => {
+    const pa = priceMap[a.id], pb = priceMap[b.id];
+    if (!pa?.updated_at && !pb?.updated_at) return 0;
+    if (!pa?.updated_at) return -1;
+    if (!pb?.updated_at) return 1;
+    return pa.updated_at.localeCompare(pb.updated_at);
   });
 
-  for (const p of sorted) {
-    const ticker = state.tickers.find(t => t.id === p.ticker_id);
-    const cur = ticker?.currency || 'INR';
-    const sym = cur === 'USD' ? '$' : '₹';
-    const isStale = !p.updated_at;
+  for (const ticker of sorted) {
+    const priceRow = priceMap[ticker.id];
+    const cur = ticker.currency || 'INR';
+    const isPrefill = !priceRow;
+    const fallback = isPrefill ? lastBuy(ticker.id) : null;
+    const priceVal = priceRow ? priceRow.price : (fallback?.price ?? '');
+    const updatedAt = priceRow?.updated_at ?? null;
+
+    const lastUpdatedHtml = updatedAt
+      ? `<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${new Date(updatedAt).toLocaleString()}</span>`
+      : isPrefill && fallback
+        ? `<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">last txn · ${fallback.date}</span>`
+        : isPrefill && !fallback
+          ? `<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">No buy txn price available</span>`
+          : `<span style="color:var(--red);font-family:var(--mono);font-size:11px">never</span>`;
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td style="font-size:12px;color:var(--muted2)">${displayName(ticker) || '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${cur}</td>
       <td class="num">
-        ${sym}<input class="price-input${isStale ? ' price-stale' : ''}"
-          type="number" step="any" value="${p.price}"
-          data-ticker-id="${p.ticker_id}" data-orig="${p.price}">
+        <input class="price-input${isPrefill ? ' price-prefill' : ''}"
+          type="number" step="any" value="${priceVal}"
+          data-ticker-id="${ticker.id}" data-orig="${priceVal}"
+          ${isPrefill ? 'data-prefill="true"' : ''}>
       </td>
-      <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">
-        ${p.updated_at ? new Date(p.updated_at).toLocaleString() : '<span style="color:var(--red)">never</span>'}
-      </td>
+      <td><button class="price-save-btn" disabled data-ticker-id="${ticker.id}">Save</button></td>
+      <td>${lastUpdatedHtml}</td>
     `;
     tbody.appendChild(tr);
+    if (isPrefill && priceVal !== '') {
+      tr.querySelector('.price-save-btn').disabled = false;
+    }
   }
 
+  const syncSaveAllBtn = () => {
+    const saveAllBtn = document.getElementById('save-all-prices-btn');
+    if (saveAllBtn) saveAllBtn.disabled = !tbody.querySelector('.price-save-btn:not(:disabled)');
+  };
+
   tbody.querySelectorAll('.price-input').forEach(input => {
-    input.addEventListener('blur', async () => {
+    input.addEventListener('input', () => {
       const v = parseFloat(input.value);
-      if (!v || v <= 0 || v === parseFloat(input.dataset.orig)) return;
-      try {
-        await api('PUT', `/prices/${input.dataset.tickerId}`, { price: v });
+      const btn = tbody.querySelector(`.price-save-btn[data-ticker-id="${input.dataset.tickerId}"]`);
+      btn.disabled = !v || v <= 0 || v === parseFloat(input.dataset.orig);
+      syncSaveAllBtn();
+    });
+  });
+
+  // Sync Save all after initial pre-fill enable
+  syncSaveAllBtn();
+
+  const saveAllBtn = document.getElementById('save-all-prices-btn');
+  if (saveAllBtn) {
+    // Replace listener to avoid stacking on re-renders
+    const newBtn = saveAllBtn.cloneNode(true);
+    newBtn.textContent = 'Save all prices';
+    saveAllBtn.parentNode.replaceChild(newBtn, saveAllBtn);
+    newBtn.disabled = !tbody.querySelector('.price-save-btn:not(:disabled)');
+    newBtn.addEventListener('click', async () => {
+      const enabledBtns = [...tbody.querySelectorAll('.price-save-btn:not(:disabled)')];
+      if (!enabledBtns.length) return;
+      newBtn.disabled = true;
+      newBtn.textContent = 'Saving…';
+      const results = await Promise.allSettled(enabledBtns.map(async btn => {
+        const tickerId = btn.dataset.tickerId;
+        const input = tbody.querySelector(`.price-input[data-ticker-id="${tickerId}"]`);
+        const v = parseFloat(input.value);
+        if (!v || v <= 0) throw new Error('invalid');
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+        await api('PUT', `/prices/${tickerId}`, { price: v });
         input.dataset.orig = v;
-        input.classList.remove('price-stale');
-        // Refresh positions
+        input.dataset.prefill = '';
+        input.classList.remove('price-prefill');
+        btn.textContent = 'Save';
+      }));
+      const saved = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      // Re-enable Save buttons for failed rows
+      enabledBtns.forEach((btn, i) => {
+        if (results[i].status === 'rejected') {
+          btn.disabled = false;
+          btn.textContent = 'Save';
+        }
+      });
+      await fetchPositions();
+      await api('GET', '/prices').then(d => { state.prices = d; });
+      await api('GET', '/prices/detail').then(d => { state.pricesDetail = d; });
+      renderPositions();
+      renderInsights();
+      renderPrices();
+      if (failed) showToast(`${saved} saved · ${failed} failed`, 'error');
+      else showToast(`${saved} price${saved !== 1 ? 's' : ''} saved`);
+    });
+  }
+
+  tbody.querySelectorAll('.price-save-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const tickerId = btn.dataset.tickerId;
+      const input = tbody.querySelector(`.price-input[data-ticker-id="${tickerId}"]`);
+      const v = parseFloat(input.value);
+      if (!v || v <= 0) return;
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      syncSaveAllBtn();
+      try {
+        await api('PUT', `/prices/${tickerId}`, { price: v });
+        input.dataset.orig = v;
+        input.dataset.prefill = '';
+        input.classList.remove('price-prefill');
         await fetchPositions();
         await api('GET', '/prices').then(d => { state.prices = d; });
         await api('GET', '/prices/detail').then(d => { state.pricesDetail = d; });
         renderPositions();
         renderInsights();
-        const updatedTicker = state.tickers.find(t => t.id === parseInt(input.dataset.tickerId));
+        renderPrices();
+        const updatedTicker = state.tickers.find(t => t.id === parseInt(tickerId));
         showToast(`Price updated: ${displayName(updatedTicker)}`);
       } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Save';
+        syncSaveAllBtn();
         showToast('Error: ' + err.message, 'error');
       }
     });
   });
+}
+
+function setupPriceFilters() {
+  const fundInput = document.getElementById('price-fund-filter');
+  const categorySel = document.getElementById('price-category-filter');
+  const sectorSel = document.getElementById('price-sector-filter');
+  const currencySel = document.getElementById('price-currency-filter');
+
+  // Populate category options
+  for (const c of state.categories) {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    categorySel.appendChild(opt);
+  }
+  // Populate sector options
+  for (const s of state.sectors) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name;
+    sectorSel.appendChild(opt);
+  }
+
+  fundInput.addEventListener('input', () => { priceFundFilter = fundInput.value; renderPrices(); });
+  categorySel.addEventListener('change', () => { priceCategoryFilter = categorySel.value; renderPrices(); });
+  sectorSel.addEventListener('change', () => { priceSectorFilter = sectorSel.value; renderPrices(); });
+  currencySel.addEventListener('change', () => { priceCurrencyFilter = currencySel.value; renderPrices(); });
 }
 
 // ── Add Form ───────────────────────────────────────────────────────────────────
@@ -914,12 +1247,16 @@ function setupAddForm() {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.add-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      const isTxn = tab.dataset.tab === 'transaction';
-      document.getElementById('add-ticker-form').style.display = tab.dataset.tab === 'ticker' ? '' : 'none';
+      const t = tab.dataset.tab;
+      const isTxn = t === 'transaction';
+      const isLivePrices = t === 'live-prices';
+      document.getElementById('add-ticker-form').style.display = t === 'ticker' ? '' : 'none';
       document.getElementById('add-txn-form').style.display = isTxn ? '' : 'none';
       document.getElementById('import-upload-card').style.display = isTxn ? '' : 'none';
       document.getElementById('import-review-card').style.display = 'none';
       document.getElementById('import-divider').style.display = isTxn ? '' : 'none';
+      document.getElementById('live-prices-panel').style.display = isLivePrices ? '' : 'none';
+      if (isLivePrices) renderLivePricesTable();
     });
   });
 
@@ -978,6 +1315,13 @@ function setupAddForm() {
 
 // ── Import flow ───────────────────────────────────────────────────────────────
 function setupImportSection() {
+  // Auto-set currency when source changes
+  document.getElementById('import-source').onchange = () => {
+    if (document.getElementById('import-source').value === 'vested') {
+      document.getElementById('import-currency').value = 'USD';
+    }
+  };
+
   // Parse file
   document.getElementById('btn-parse-file').onclick = async () => {
     const fileInput = document.getElementById('import-file');
@@ -991,6 +1335,7 @@ function setupImportSection() {
       const fd = new FormData();
       fd.append('file', fileInput.files[0]);
       fd.append('currency', currency);
+      fd.append('source', document.getElementById('import-source').value);
       importParseResult = await apiUpload('/import/parse', fd);
       renderImportReview(importParseResult, currency);
     } catch (err) {
@@ -1157,6 +1502,639 @@ function updateImportConfirmBtn() {
   btn.disabled = checkedCount === 0 || !allResolved;
   btn.textContent = `Import ${checkedCount} transaction${checkedCount !== 1 ? 's' : ''}`;
   return btn.textContent;
+}
+
+// ── Live Prices Tab ───────────────────────────────────────────────────────────
+
+function setupLivePricesTab() {
+  // ── Sub-tab switching ──────────────────────────────────────────────────────
+  document.querySelectorAll('.lp-subtab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.lp-subtab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.lpTab;
+      document.getElementById('lp-pane-us-equity').style.display  = tab === 'us-equity'  ? '' : 'none';
+      document.getElementById('lp-pane-indian-mf').style.display  = tab === 'indian-mf'  ? '' : 'none';
+      if (tab === 'indian-mf') renderMfTable();
+    });
+  });
+
+  // ── US Equity: Save API key ────────────────────────────────────────────────
+  document.getElementById('lp-save-key').addEventListener('click', async () => {
+    const key = document.getElementById('lp-api-key').value.trim();
+    const status = document.getElementById('lp-key-status');
+    if (!key) { status.textContent = 'Please enter a key'; status.className = 'lp-key-status error'; return; }
+    try {
+      await api('PUT', '/config/av_api_key', { value: key });
+      status.textContent = 'API key saved ✓';
+      status.className = 'lp-key-status ok';
+    } catch (err) {
+      status.textContent = 'Error saving key: ' + err.message;
+      status.className = 'lp-key-status error';
+    }
+  });
+
+  // ── US Equity: Select-all checkbox ────────────────────────────────────────
+  document.getElementById('lp-select-all').addEventListener('change', (e) => {
+    document.querySelectorAll('.lp-row-check').forEach(cb => { cb.checked = e.target.checked; });
+    updateFetchBtn();
+  });
+
+  // ── US Equity: Fetch button ────────────────────────────────────────────────
+  document.getElementById('lp-fetch-btn').addEventListener('click', fetchSelectedPrices);
+
+  // ── Indian MF: Select-all checkbox ────────────────────────────────────────
+  document.getElementById('lp-mf-select-all').addEventListener('change', (e) => {
+    document.querySelectorAll('.lp-mf-row-check').forEach(cb => { if (!cb.disabled) cb.checked = e.target.checked; });
+    updateMfFetchBtn();
+  });
+
+  // ── Indian MF: Fetch button ────────────────────────────────────────────────
+  document.getElementById('lp-mf-fetch-btn').addEventListener('click', fetchSelectedMfPrices);
+}
+
+async function renderLivePricesTable() {
+  // Load saved API key
+  try {
+    const cfg = await api('GET', '/config/av_api_key');
+    if (cfg && cfg.value) {
+      document.getElementById('lp-api-key').value = cfg.value;
+      document.getElementById('lp-key-status').textContent = 'API key saved ✓';
+      document.getElementById('lp-key-status').className = 'lp-key-status ok';
+    }
+  } catch (_) {}
+
+  // Show only USD tickers
+  const usdTickers = state.tickers.filter(t => t.currency === 'USD');
+  const tbody = document.getElementById('lp-ticker-tbody');
+  tbody.innerHTML = '';
+
+  if (!usdTickers.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:16px;opacity:.6">No USD holdings found.</td></tr>';
+    return;
+  }
+
+  for (const ticker of usdTickers) {
+    const tr = document.createElement('tr');
+    tr.dataset.tickerId = ticker.id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="lp-row-check" data-id="${ticker.id}"></td>
+      <td>${displayName(ticker)}</td>
+      <td><input type="text" class="lp-symbol-input" data-id="${ticker.id}" value="${ticker.symbol || ''}" placeholder="e.g. AAPL" style="width:80px;text-transform:uppercase"></td>
+      <td class="num lp-last-price" id="lp-price-${ticker.id}">—</td>
+      <td class="lp-last-updated" id="lp-updated-${ticker.id}">—</td>
+    `;
+    tbody.appendChild(tr);
+
+    // Symbol save on blur / Enter
+    const symbolInput = tr.querySelector('.lp-symbol-input');
+    const saveSymbol = async () => {
+      const val = symbolInput.value.trim().toUpperCase();
+      if (val === (ticker.symbol || '').toUpperCase()) return;
+      try {
+        await api('PUT', `/tickers/${ticker.id}/symbol`, { symbol: val });
+        // Update local state
+        const t = state.tickers.find(t => t.id === ticker.id);
+        if (t) t.symbol = val;
+        symbolInput.style.outline = '2px solid #22c55e';
+        setTimeout(() => { symbolInput.style.outline = ''; }, 1200);
+        mvRawData = null;  // invalidate chart cache
+      } catch (err) {
+        showToast('Error saving symbol: ' + err.message, 'error');
+      }
+    };
+    symbolInput.addEventListener('blur', saveSymbol);
+    symbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveSymbol(); } });
+    symbolInput.addEventListener('input', updateFetchBtn);
+  }
+
+  // Wire checkbox change → fetch button state
+  document.querySelectorAll('.lp-row-check').forEach(cb => cb.addEventListener('change', updateFetchBtn));
+  updateFetchBtn();
+
+  // Load last fetched prices for tickers that have a symbol
+  const symbolIds = usdTickers.filter(t => t.symbol).map(t => t.id);
+  if (symbolIds.length) {
+    try {
+      const latest = await api('GET', `/price-history/latest?ticker_ids=${symbolIds.join(',')}`);
+      for (const r of latest.results) {
+        const priceEl = document.getElementById(`lp-price-${r.ticker_id}`);
+        const updatedEl = document.getElementById(`lp-updated-${r.ticker_id}`);
+        if (priceEl && r.latest_close != null) priceEl.textContent = r.latest_close.toFixed(2);
+        if (updatedEl && r.latest_date) updatedEl.textContent = r.latest_date;
+      }
+    } catch (_) {}
+  }
+}
+
+async function renderMfTable() {
+  const inrTickers = state.tickers.filter(t => t.currency === 'INR');
+  const tbody = document.getElementById('lp-mf-tbody');
+  tbody.innerHTML = '';
+
+  if (!inrTickers.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:16px;opacity:.6">No INR holdings found.</td></tr>';
+    updateMfFetchBtn();
+    return;
+  }
+
+  for (const ticker of inrTickers) {
+    const schemeCode = ticker.symbol || '';
+    const tr = document.createElement('tr');
+    tr.dataset.tickerId = ticker.id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="lp-mf-row-check" data-id="${ticker.id}" ${schemeCode ? '' : 'disabled'}></td>
+      <td>${displayName(ticker)}</td>
+      <td>
+        <div class="lp-scheme-wrap" data-ticker-id="${ticker.id}">
+          <input type="text" class="lp-scheme-input" data-id="${ticker.id}"
+                 value="${schemeCode}" placeholder="Search fund name…">
+          <div class="lp-scheme-dropdown" id="lp-scheme-dd-${ticker.id}"></div>
+        </div>
+      </td>
+      <td class="num lp-mf-price" id="lp-mf-price-${ticker.id}">—</td>
+      <td class="lp-mf-updated" id="lp-mf-updated-${ticker.id}">—</td>
+    `;
+    tbody.appendChild(tr);
+
+    const input    = tr.querySelector('.lp-scheme-input');
+    const dropdown = tr.querySelector('.lp-scheme-dropdown');
+    let searchTimer;
+
+    input.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = input.value.trim();
+      if (q.length < 2) { dropdown.classList.remove('open'); return; }
+      searchTimer = setTimeout(async () => {
+        dropdown.innerHTML = '<div class="lp-scheme-loading">Searching…</div>';
+        dropdown.classList.add('open');
+        try {
+          const results = await api('GET', `/mf/search?q=${encodeURIComponent(q)}`);
+          dropdown.innerHTML = '';
+          if (!results || !results.length) {
+            dropdown.innerHTML = '<div class="lp-scheme-loading">No results</div>';
+            return;
+          }
+          results.slice(0, 8).forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'lp-scheme-option';
+            div.innerHTML = `${item.schemeName}<br><span class="opt-code">${item.schemeCode}</span>`;
+            div.addEventListener('mousedown', async (e) => {
+              e.preventDefault();   // prevent blur from firing before click
+              const code = String(item.schemeCode);
+              input.value = code;
+              dropdown.classList.remove('open');
+              try {
+                await api('PUT', `/tickers/${ticker.id}/symbol`, { symbol: code });
+                const t = state.tickers.find(t => t.id === ticker.id);
+                if (t) t.symbol = code;
+                const cb = tr.querySelector('.lp-mf-row-check');
+                if (cb) { cb.disabled = false; cb.checked = true; }
+                input.style.outline = '2px solid #22c55e';
+                setTimeout(() => { input.style.outline = ''; }, 1200);
+                mvRawData = null;
+                updateMfFetchBtn();
+              } catch (err) {
+                showToast('Error saving scheme: ' + err.message, 'error');
+              }
+            });
+            dropdown.appendChild(div);
+          });
+        } catch (err) {
+          dropdown.innerHTML = `<div class="lp-scheme-loading">Error: ${err.message}</div>`;
+        }
+      }, 350);
+    });
+
+    input.addEventListener('blur', () => {
+      setTimeout(() => dropdown.classList.remove('open'), 150);
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { dropdown.classList.remove('open'); input.blur(); }
+    });
+  }
+
+  // Wire checkboxes → fetch button state
+  document.querySelectorAll('.lp-mf-row-check').forEach(cb => cb.addEventListener('change', updateMfFetchBtn));
+  updateMfFetchBtn();
+
+  // Load stored latest NAVs for tickers with a scheme code
+  const schemeIds = inrTickers.filter(t => t.symbol).map(t => t.id);
+  if (schemeIds.length) {
+    try {
+      const latest = await api('GET', `/price-history/latest?ticker_ids=${schemeIds.join(',')}`);
+      for (const r of latest.results) {
+        const priceEl   = document.getElementById(`lp-mf-price-${r.ticker_id}`);
+        const updatedEl = document.getElementById(`lp-mf-updated-${r.ticker_id}`);
+        if (priceEl   && r.latest_close != null) priceEl.textContent   = r.latest_close.toFixed(4);
+        if (updatedEl && r.latest_date)          updatedEl.textContent = r.latest_date;
+      }
+    } catch (_) {}
+  }
+}
+
+async function fetchSelectedMfPrices() {
+  const checkedIds = [...document.querySelectorAll('.lp-mf-row-check:checked')]
+    .filter(cb => !cb.disabled)
+    .map(cb => parseInt(cb.dataset.id));
+  if (!checkedIds.length) return;
+
+  const btn      = document.getElementById('lp-mf-fetch-btn');
+  const statusEl = document.getElementById('lp-mf-fetch-status');
+  btn.disabled = true;
+  btn.textContent = 'Fetching…';
+  statusEl.textContent = '';
+  statusEl.className = 'lp-fetch-status';
+
+  try {
+    const resp = await api('POST', '/price-history/fetch-mf', { ticker_ids: checkedIds });
+
+    for (const r of resp.results) {
+      const priceEl    = document.getElementById(`lp-mf-price-${r.ticker_id}`);
+      const updatedEl  = document.getElementById(`lp-mf-updated-${r.ticker_id}`);
+      const schemeInput = document.querySelector(`.lp-scheme-input[data-id="${r.ticker_id}"]`);
+
+      if (r.status === 'success') {
+        if (priceEl   && r.latest_close != null) priceEl.textContent   = r.latest_close.toFixed(4);
+        if (updatedEl && r.latest_date)          updatedEl.textContent = r.latest_date;
+        if (schemeInput) schemeInput.style.outline = '';
+      } else if (r.status === 'invalid_symbol') {
+        if (schemeInput) schemeInput.style.outline = '2px solid #ef4444';
+        if (updatedEl)   updatedEl.textContent = '⚠ Scheme not found';
+      } else if (r.status === 'no_symbol') {
+        if (updatedEl) updatedEl.textContent = 'No scheme set';
+      }
+    }
+
+    const ok = resp.results.filter(r => r.status === 'success').length;
+    statusEl.textContent = ok ? `${ok} fund${ok !== 1 ? 's' : ''} updated.` : 'No funds updated.';
+    statusEl.className = 'lp-fetch-status ok';
+    mvRawData = null;
+
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.className = 'lp-fetch-status error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Fetch Selected';
+  }
+}
+
+function updateFetchBtn() {
+  const anyChecked = [...document.querySelectorAll('.lp-row-check')].some(cb => cb.checked);
+  document.getElementById('lp-fetch-btn').disabled = !anyChecked;
+}
+
+function updateMfFetchBtn() {
+  const anyChecked = [...document.querySelectorAll('.lp-mf-row-check')].some(cb => cb.checked && !cb.disabled);
+  const btn = document.getElementById('lp-mf-fetch-btn');
+  if (btn) btn.disabled = !anyChecked;
+}
+
+async function fetchSelectedPrices() {
+  const checkedIds = [...document.querySelectorAll('.lp-row-check:checked')].map(cb => parseInt(cb.dataset.id));
+  if (!checkedIds.length) return;
+
+  const btn = document.getElementById('lp-fetch-btn');
+  const statusEl = document.getElementById('lp-fetch-status');
+  btn.disabled = true;
+  btn.textContent = 'Fetching…';
+  statusEl.textContent = '';
+  statusEl.className = 'lp-fetch-status';
+
+  try {
+    const resp = await api('POST', '/price-history/fetch', { ticker_ids: checkedIds });
+
+    let rateLimited = false;
+    for (const r of resp.results) {
+      const priceEl = document.getElementById(`lp-price-${r.ticker_id}`);
+      const updatedEl = document.getElementById(`lp-updated-${r.ticker_id}`);
+      const symbolInput = document.querySelector(`.lp-symbol-input[data-id="${r.ticker_id}"]`);
+
+      if (r.status === 'success') {
+        if (priceEl && r.latest_close != null) priceEl.textContent = r.latest_close.toFixed(2);
+        if (updatedEl && r.latest_date) updatedEl.textContent = r.latest_date;
+        if (symbolInput) symbolInput.style.outline = '';
+      } else if (r.status === 'invalid_symbol') {
+        if (symbolInput) { symbolInput.style.outline = '2px solid #ef4444'; }
+        if (updatedEl) updatedEl.textContent = '⚠ Symbol not found';
+      } else if (r.status === 'no_symbol') {
+        if (updatedEl) updatedEl.textContent = 'No symbol set';
+      } else if (r.status === 'rate_limited') {
+        rateLimited = true;
+      }
+    }
+
+    if (rateLimited) {
+      statusEl.textContent = 'Daily limit reached — try again tomorrow.';
+      statusEl.className = 'lp-fetch-status error';
+    } else {
+      const ok = resp.results.filter(r => r.status === 'success').length;
+      statusEl.textContent = ok ? `${ok} ticker${ok !== 1 ? 's' : ''} updated.` : '';
+      statusEl.className = 'lp-fetch-status ok';
+    }
+
+    // Invalidate chart so it refetches on next Insights visit
+    mvRawData = null;
+
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.className = 'lp-fetch-status error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Fetch Selected';
+  }
+}
+
+// ── Market Value Chart ────────────────────────────────────────────────────────
+
+function buildMvParams() {
+  const parts = [];
+  if (mvCatIds !== null && mvCatIds.size > 0) parts.push(`category_ids=${[...mvCatIds].join(',')}`);
+  if (mvSecIds !== null && mvSecIds.size > 0) parts.push(`sector_ids=${[...mvSecIds].join(',')}`);
+  if (mvTkrIds !== null && mvTkrIds.size > 0) parts.push(`ticker_ids_filter=${[...mvTkrIds].join(',')}`);
+  return parts.length ? '?' + parts.join('&') : '';
+}
+
+async function buildMarketValueChart() {
+  if (!mvDropdownsReady) {
+    initMvDropdowns();
+    mvDropdownsReady = true;
+  }
+
+  if (!mvRawData) {
+    try {
+      mvRawData = await api('GET', `/insights/market-value-history${buildMvParams()}`);
+    } catch (err) {
+      console.error('Market value chart error:', err);
+      return;
+    }
+  }
+
+  updateMvDropdownLabels();
+  renderMarketValueChart();
+
+  const nudge = document.getElementById('mv-nudge');
+  if (mvRawData.has_any_partial && !sessionStorage.getItem('mv_nudge_dismissed')) {
+    nudge.style.display = '';
+  } else {
+    nudge.style.display = 'none';
+  }
+}
+
+function initMvDropdowns() {
+  const row = document.getElementById('mv-filter-row');
+  row.innerHTML = '';
+
+  const defs = [
+    { key: 'cat', label: 'Category', items: state.categories.map(c => ({ id: c.id, name: c.name })),               getIds: () => mvCatIds, setIds: v => { mvCatIds = v; } },
+    { key: 'sec', label: 'Sector',   items: state.sectors.map(s => ({ id: s.id, name: s.name })),                  getIds: () => mvSecIds, setIds: v => { mvSecIds = v; } },
+    { key: 'tkr', label: 'Fund',     items: state.tickers.map(t => ({ id: t.id, name: t.short_name || t.name })), getIds: () => mvTkrIds, setIds: v => { mvTkrIds = v; } },
+  ];
+
+  defs.forEach(def => {
+    const allItemIds = def.items.map(i => i.id);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mv-dropdown';
+
+    const btn = document.createElement('button');
+    btn.className = 'mv-dd-btn';
+    btn.id = `mv-dd-btn-${def.key}`;
+    btn.innerHTML = `<span id="mv-dd-label-${def.key}">${def.label}</span><span class="mv-dd-arrow">▾</span>`;
+
+    const panel = document.createElement('div');
+    panel.className = 'mv-dd-panel';
+
+    // Search input
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'mv-dd-search-wrap';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.className = 'mv-dd-search';
+    searchInput.placeholder = 'Search…';
+    searchWrap.appendChild(searchInput);
+    panel.appendChild(searchWrap);
+
+    // "All" row
+    const allLabel = document.createElement('label');
+    allLabel.className = 'mv-dd-item mv-dd-all';
+    const allCb = document.createElement('input');
+    allCb.type = 'checkbox';
+    allCb.checked = true;  // null = All mode initially
+    allLabel.appendChild(allCb);
+    allLabel.appendChild(document.createTextNode('All'));
+    panel.appendChild(allLabel);
+
+    // Individual item rows (all checked initially since null = All)
+    def.items.forEach(item => {
+      const lbl = document.createElement('label');
+      lbl.className = 'mv-dd-item';
+      lbl.dataset.name = item.name.toLowerCase();
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.id = item.id;
+      cb.checked = true;
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(item.name));
+      panel.appendChild(lbl);
+    });
+
+    // Search: show/hide items
+    searchInput.addEventListener('input', () => {
+      const q = searchInput.value.toLowerCase();
+      panel.querySelectorAll('.mv-dd-item:not(.mv-dd-all)').forEach(lbl => {
+        lbl.style.display = (!q || lbl.dataset.name.includes(q)) ? '' : 'none';
+      });
+    });
+    searchInput.addEventListener('click', e => e.stopPropagation());
+
+    // Open / close panel
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const isOpen = panel.classList.contains('open');
+      document.querySelectorAll('.mv-dd-panel').forEach(p => p.classList.remove('open'));
+      if (!isOpen) {
+        panel.classList.add('open');
+        searchInput.value = '';
+        panel.querySelectorAll('.mv-dd-item:not(.mv-dd-all)').forEach(lbl => lbl.style.display = '');
+        searchInput.focus();
+      }
+    });
+
+    // Checkbox interactions
+    panel.addEventListener('change', e => {
+      const cb = e.target;
+      if (cb.type !== 'checkbox') return;
+
+      if (cb === allCb) {
+        if (allCb.checked) {
+          // Re-checking All → back to null (All) mode, all items checked
+          def.setIds(null);
+          panel.querySelectorAll('input[data-id]').forEach(c => { c.checked = true; });
+        } else {
+          // Unchecking All → empty selection, all items unchecked
+          def.setIds(new Set());
+          panel.querySelectorAll('input[data-id]').forEach(c => { c.checked = false; });
+        }
+      } else {
+        const id = parseInt(cb.dataset.id);
+        let ids = def.getIds();
+
+        if (ids === null) {
+          // In All mode: transitioning to explicit — exclude the unchecked item
+          ids = new Set(allItemIds);
+          ids.delete(id);
+          allCb.checked = false;
+          def.setIds(ids);
+        } else {
+          ids = new Set(ids);
+          cb.checked ? ids.add(id) : ids.delete(id);
+          def.setIds(ids);
+          // If all items individually checked → revert to All mode
+          if (allItemIds.every(i => ids.has(i))) {
+            def.setIds(null);
+            allCb.checked = true;
+            panel.querySelectorAll('input[data-id]').forEach(c => { c.checked = true; });
+          } else {
+            allCb.checked = false;
+          }
+        }
+      }
+      mvRawData = null;
+      updateMvDropdownLabels();
+      buildMarketValueChart();
+    });
+
+    panel.addEventListener('click', e => e.stopPropagation());
+
+    wrapper.appendChild(btn);
+    wrapper.appendChild(panel);
+    row.appendChild(wrapper);
+  });
+
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.mv-dd-panel').forEach(p => p.classList.remove('open'));
+  });
+}
+
+function updateMvDropdownLabels() {
+  const defs = { cat: { ids: mvCatIds, label: 'Category' }, sec: { ids: mvSecIds, label: 'Sector' }, tkr: { ids: mvTkrIds, label: 'Fund' } };
+  for (const [key, { ids, label }] of Object.entries(defs)) {
+    const labelEl = document.getElementById(`mv-dd-label-${key}`);
+    const btn = document.getElementById(`mv-dd-btn-${key}`);
+    if (!labelEl) continue;
+    const filtered = ids !== null && ids.size > 0;
+    labelEl.textContent = filtered ? `${label} (${ids.size})` : label;
+    btn.classList.toggle('active', filtered);
+  }
+}
+
+function renderMarketValueChart() {
+  if (!mvRawData || !mvRawData.months.length) {
+    document.getElementById('mv-chart-card').style.display = 'none';
+    return;
+  }
+  document.getElementById('mv-chart-card').style.display = '';
+
+  const { months, invested, market_value, partial_months, has_any_partial } = mvRawData;
+
+  // Show/hide partial legend note
+  document.getElementById('mv-partial-note').style.display = has_any_partial ? '' : 'none';
+
+  if (mvChart) { mvChart.destroy(); mvChart = null; }
+
+  const BAR_W = 28;
+  const canvas = document.getElementById('mv-chart');
+  canvas.width = Math.max(600, months.length * BAR_W + 80);
+  canvas.height = 260;
+
+  mvChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: months,
+      datasets: [
+        {
+          label: 'Invested',
+          data: invested,
+          borderColor: '#94a3b8',
+          borderWidth: 2,
+          pointRadius: 1.5,
+          pointHoverRadius: 4,
+          fill: false,
+          tension: 0.15,
+        },
+        {
+          label: 'Market Value',
+          data: market_value,
+          borderColor: '#3b82f6',
+          borderWidth: 2,
+          pointRadius: 1.5,
+          pointHoverRadius: 4,
+          fill: false,
+          tension: 0.15,
+          segment: {
+            borderDash: (ctx) => partial_months[ctx.p0DataIndex] ? [4, 4] : undefined,
+            borderColor: (ctx) => partial_months[ctx.p0DataIndex] ? '#93c5fd' : '#3b82f6',
+          },
+        },
+      ],
+    },
+    options: {
+      responsive: false,
+      animation: { duration: 400 },
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { maxRotation: 45, font: { size: 10 } },
+        },
+        y: {
+          grid: { color: 'rgba(128,128,128,0.12)' },
+          ticks: { callback: v => inrK(v), font: { size: 11 } },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${inrK(ctx.raw)}`,
+            footer: (items) => {
+              const i = items[0].dataIndex;
+              if (partial_months[i]) return '⚠ Some holdings at cost basis';
+              return '';
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+// ── Nudge wiring ──────────────────────────────────────────────────────────────
+function setupNudge() {
+  document.getElementById('mv-nudge-dismiss').addEventListener('click', () => {
+    sessionStorage.setItem('mv_nudge_dismissed', '1');
+    document.getElementById('mv-nudge').style.display = 'none';
+  });
+
+  document.getElementById('mv-nudge-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    showView('add');
+    // Activate Live Prices tab
+    document.querySelectorAll('.add-tab').forEach(t => t.classList.remove('active'));
+    const lpTab = document.querySelector('.add-tab[data-tab="live-prices"]');
+    if (lpTab) {
+      lpTab.classList.add('active');
+      document.getElementById('add-ticker-form').style.display = 'none';
+      document.getElementById('add-txn-form').style.display = 'none';
+      document.getElementById('import-upload-card').style.display = 'none';
+      document.getElementById('import-divider').style.display = 'none';
+      document.getElementById('live-prices-panel').style.display = '';
+      renderLivePricesTable();
+    }
+  });
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

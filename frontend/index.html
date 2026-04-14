@@ -165,6 +165,12 @@
       </div>
     </div>
 
+    <!-- Market value nudge — shown when some holdings have no price history -->
+    <div id="mv-nudge" class="ins-nudge" style="display:none">
+      <span>Some holdings shown at cost basis — <a href="#" id="mv-nudge-link">connect Alpha Vantage</a> to track market value.</span>
+      <button class="ins-nudge-dismiss" id="mv-nudge-dismiss">✕</button>
+    </div>
+
     <div class="ins-card">
       <div class="ins-card-title">Allocation by Category</div>
       <div class="ins-card-sub">Portfolio weight per asset category</div>
@@ -186,6 +192,40 @@
       <div class="ins-card-sub">Portfolio weight per investment theme</div>
       <div id="sector-bars"></div>
     </div>
+
+    <div class="ins-card">
+      <div class="ins-card-header">
+        <div>
+          <div class="ins-card-title">Invested Value Over Time</div>
+          <div class="ins-card-sub" id="quarterly-chart-sub">Cumulative capital deployed by quarter (net of sells)</div>
+        </div>
+        <div class="chart-toggle">
+          <button class="chart-toggle-btn active" data-period="quarterly">Quarterly</button>
+          <button class="chart-toggle-btn" data-period="annual">Annual</button>
+        </div>
+      </div>
+      <div class="quarterly-chart-wrap">
+        <canvas id="quarterly-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="ins-card" id="mv-chart-card">
+      <div class="ins-card-header">
+        <div>
+          <div class="ins-card-title">Portfolio Value Over Time</div>
+          <div class="ins-card-sub">Invested cost vs market value by month</div>
+        </div>
+      </div>
+      <div class="mv-filter-row" id="mv-filter-row"></div>
+      <div class="mv-legend">
+        <span class="mv-leg mv-leg-invested">&#9472;&#9472; Invested</span>
+        <span class="mv-leg mv-leg-market">&#9472;&#9472; Market Value</span>
+        <span class="mv-leg mv-leg-partial" id="mv-partial-note" style="display:none">- - At cost (unpriced)</span>
+      </div>
+      <div class="quarterly-chart-wrap">
+        <canvas id="mv-chart"></canvas>
+      </div>
+    </div>
   </div>
 
   <!-- ══ TRANSACTIONS ══ -->
@@ -195,6 +235,7 @@
         <div class="page-title">Transactions</div>
         <div class="page-sub" id="txn-sub">Loading…</div>
       </div>
+      <button id="txn-download-btn" class="btn-download-csv">Download CSV</button>
     </div>
     <div class="filter-bar">
       <select id="txn-broker-filter" class="filter-select">
@@ -221,6 +262,7 @@
             <th class="num">Units</th>
             <th class="num">Price</th>
             <th class="num">Amount</th>
+            <th class="num">Amount (INR)</th>
             <th>Broker</th>
             <th></th>
           </tr>
@@ -237,6 +279,17 @@
         <div class="page-title">Prices</div>
         <div class="page-sub">Stalest prices at top</div>
       </div>
+      <button id="save-all-prices-btn" class="btn-secondary" disabled style="background:var(--surface);border-color:#c8c8c8">Save all prices</button>
+    </div>
+    <div class="filter-bar">
+      <input id="price-fund-filter" class="filter-select" type="text" placeholder="Search fund…" style="width:160px;border-color:#c8c8c8;background:var(--surface)">
+      <select id="price-category-filter" class="filter-select"><option value="">All categories</option></select>
+      <select id="price-sector-filter" class="filter-select"><option value="">All sectors</option></select>
+      <select id="price-currency-filter" class="filter-select">
+        <option value="">All currencies</option>
+        <option value="INR">INR</option>
+        <option value="USD">USD</option>
+      </select>
     </div>
     <div class="table-wrap">
       <table>
@@ -245,6 +298,7 @@
             <th>Fund</th>
             <th>Currency</th>
             <th class="num">Price</th>
+            <th></th>
             <th>Last Updated</th>
           </tr>
         </thead>
@@ -265,6 +319,7 @@
     <div class="add-tabs">
       <button class="add-tab active" data-tab="ticker">Add Fund</button>
       <button class="add-tab" data-tab="transaction">Add Transaction</button>
+      <button class="add-tab" data-tab="live-prices">Live Prices</button>
     </div>
 
     <!-- Add Ticker -->
@@ -321,6 +376,8 @@
           <label>Source</label>
           <select id="import-source">
             <option value="groww_mf">Groww MFs</option>
+            <option value="vested">Vested</option>
+            <option value="groww_stocks">Groww Stocks</option>
           </select>
         </div>
         <div class="form-group">
@@ -361,6 +418,71 @@
     </div>
 
     <div class="import-divider" id="import-divider" style="display:none"></div>
+
+    <!-- Live Prices -->
+    <div id="live-prices-panel" style="display:none">
+      <div class="lp-subtabs">
+        <button class="lp-subtab active" data-lp-tab="us-equity">US Equity</button>
+        <button class="lp-subtab" data-lp-tab="indian-mf">Indian MF</button>
+      </div>
+
+      <!-- US Equity pane -->
+      <div id="lp-pane-us-equity">
+        <div class="form-card">
+          <div class="lp-section-title">Alpha Vantage API Key</div>
+          <div class="lp-key-row">
+            <input id="lp-api-key" type="password" class="lp-key-input" placeholder="Paste your free API key from alphavantage.co">
+            <button class="btn-secondary" id="lp-save-key">Save</button>
+          </div>
+          <div class="lp-key-status" id="lp-key-status"></div>
+        </div>
+
+        <div class="form-card" id="lp-ticker-card">
+          <div class="lp-section-title">USD Holdings — Symbol Mapping &amp; Refresh</div>
+          <div class="lp-section-sub">Enter the exchange symbol for each holding (e.g. AAPL, META), then select and fetch to load price history.</div>
+          <table class="lp-table" id="lp-ticker-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lp-select-all"></th>
+                <th>Ticker</th>
+                <th>Symbol</th>
+                <th class="num">Last Price</th>
+                <th>Last Updated</th>
+              </tr>
+            </thead>
+            <tbody id="lp-ticker-tbody"></tbody>
+          </table>
+          <div class="lp-actions-row">
+            <button class="btn-submit" id="lp-fetch-btn" disabled>Fetch Selected</button>
+            <div class="lp-fetch-status" id="lp-fetch-status"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Indian MF pane -->
+      <div id="lp-pane-indian-mf" style="display:none">
+        <div class="form-card">
+          <div class="lp-section-title">Indian Mutual Funds — Scheme Mapping &amp; Refresh</div>
+          <div class="lp-section-sub">Search and assign an mfapi.in scheme to each holding. Only mutual fund schemes are supported; INR equities can be left unmapped.</div>
+          <table class="lp-table" id="lp-mf-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lp-mf-select-all"></th>
+                <th>Fund</th>
+                <th>Scheme</th>
+                <th class="num">Last NAV</th>
+                <th>Last Updated</th>
+              </tr>
+            </thead>
+            <tbody id="lp-mf-tbody"></tbody>
+          </table>
+          <div class="lp-actions-row">
+            <button class="btn-submit" id="lp-mf-fetch-btn" disabled>Fetch Selected</button>
+            <div class="lp-fetch-status" id="lp-mf-fetch-status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Add Transaction -->
     <div class="form-card" id="add-txn-form" style="display:none">
@@ -419,6 +541,6 @@
 </div>
 </div><!-- #app-screen -->
 
-<script type="module" src="/static/app.js"></script>
+<script type="module" src="/static/app.js?v=2"></script>
 </body>
 </html>

@@ -39,6 +39,7 @@ class Ticker(Base):
     category_id = Column(Integer)
     sector_id = Column(Integer)
     created_at = Column(Text)
+    symbol = Column(Text, nullable=True)   # exchange symbol e.g. 'META', 'AAPL'
 
 
 class Transaction(Base):
@@ -68,8 +69,7 @@ class Price(Base):
 class FxHistory(Base):
     __tablename__ = "fx_history"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Text, nullable=True)
-    from_ym = Column(Text, nullable=False)
+    from_ym = Column(Text, nullable=False)   # user_id removed — global table
     rate = Column(Float, nullable=False)
 
 
@@ -81,3 +81,18 @@ class Config(Base):
     key = Column(Text, nullable=False)
     value = Column(Text, nullable=False)
     updated_at = Column(Text)
+
+
+class PriceHistory(Base):
+    __tablename__ = "price_history"
+    __table_args__ = (UniqueConstraint("symbol", "granularity", "date", name="price_history_symbol_gran_date_key"),)
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    symbol      = Column(Text, nullable=False)
+    granularity = Column(Text, nullable=False)   # 'monthly'; 'daily' for mfapi later
+    date        = Column(Text, nullable=False)   # last trading day of period e.g. '2026-03-31'
+    close       = Column(Float, nullable=True)
+    high        = Column(Float, nullable=True)
+    low         = Column(Float, nullable=True)
+    open        = Column(Float, nullable=True)
+    source      = Column(Text, nullable=True)    # 'alpha_vantage'
+    fetched_at  = Column(Text, nullable=True)

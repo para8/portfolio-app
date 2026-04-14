@@ -12,7 +12,7 @@ import models
 import schemas
 from auth import get_current_user
 from database import engine, get_db
-from parsers import groww_mf
+from parsers import groww_mf, vested, groww_stocks
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -101,7 +101,7 @@ def get_positions(
     transactions = db.query(models.Transaction).filter_by(user_id=user_id).all()
     tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
     prices_map = {p.ticker_id: p.price for p in db.query(models.Price).filter_by(user_id=user_id).all()}
-    fx_rows = db.query(models.FxHistory).filter_by(user_id=user_id).all()
+    fx_rows = db.query(models.FxHistory).all()
     categories_map = {c.id: c for c in db.query(models.Category).filter_by(user_id=user_id).all()}
     sectors_map = {s.id: s for s in db.query(models.Sector).filter_by(user_id=user_id).all()}
 
@@ -290,6 +290,7 @@ def get_tickers(
             "sector_id": t.sector_id,
             "category_name": categories[t.category_id].name if t.category_id and t.category_id in categories else None,
             "sector_name": sectors[t.sector_id].name if t.sector_id and t.sector_id in sectors else None,
+            "symbol": t.symbol,
         })
     return result
 
@@ -325,12 +326,18 @@ def create_ticker(
 async def import_parse(
     file: UploadFile = File(...),
     currency: str = Form(...),
+    source: str = Form("groww_mf"),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
     file_bytes = await file.read()
     try:
-        rows = groww_mf.parse(file_bytes)
+        if source == 'vested':
+            rows = vested.parse(file_bytes)
+        elif source == 'groww_stocks':
+            rows = groww_stocks.parse(file_bytes)
+        else:
+            rows = groww_mf.parse(file_bytes)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse file: {e}")
 
@@ -462,9 +469,14 @@ def get_transactions(
     txns = q.order_by(models.Transaction.date.desc()).all()
     brokers = {b.id: b.name for b in db.query(models.Broker).filter_by(user_id=user_id).all()}
     tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
+    fx_rows = db.query(models.FxHistory).all()
     result = []
     for t in txns:
         ticker_obj = tickers_map.get(t.ticker_id)
+        if ticker_obj and ticker_obj.currency == "USD":
+            amount_inr = round(t.amount * historical_fx(t.date, fx_rows))
+        else:
+            amount_inr = round(t.amount)
         result.append({
             "id": t.id,
             "date": t.date,
@@ -477,6 +489,7 @@ def get_transactions(
             "broker_id": t.broker_id,
             "broker_name": brokers.get(t.broker_id) if t.broker_id else None,
             "created_at": t.created_at,
+            "amount_inr": amount_inr,
         })
     return result
 
@@ -575,11 +588,30 @@ def create_category(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    c = models.Category(user_id=user_id, name=payload.name, color=payload.color)
-    db.add(c)
-    db.commit()
-    db.refresh(c)
-    return c
+    # #region agent log
+    import json, time as _time
+    _log_path = "/Users/param/claudecode-portfoliotracker-v2/.cursor/debug.log"
+    def _dbg(msg, data, hyp="?"):
+        entry = json.dumps({"timestamp": int(_time.time()*1000), "hypothesisId": hyp, "location": "main.py:create_category", "message": msg, "data": data})
+        open(_log_path, "a").write(entry + "\n")
+    _dbg("create_category called", {"user_id": str(user_id), "name": payload.name, "color": payload.color}, "A/C/D")
+    # #endregion
+    try:
+        c = models.Category(user_id=user_id, name=payload.name, color=payload.color)
+        db.add(c)
+        db.commit()
+        db.refresh(c)
+        # #region agent log
+        _dbg("create_category success", {"id": c.id, "name": c.name}, "A/C/D")
+        # #endregion
+        return c
+    except Exception as _e:
+        db.rollback()
+        # #region agent log
+        import traceback as _tb
+        _dbg("create_category EXCEPTION", {"type": type(_e).__name__, "msg": str(_e), "traceback": _tb.format_exc()}, "A/B/C/D")
+        # #endregion
+        raise
 
 
 # ── Sectors ───────────────────────────────────────────────────────────────────
@@ -668,3 +700,505 @@ def set_config(
         db.add(c)
     db.commit()
     return {"key": c.key, "value": c.value, "updated_at": c.updated_at}
+
+
+# ── Insights: Quarterly Invested ──────────────────────────────────────────────
+
+@app.get("/api/v1/insights/quarterly-invested")
+def quarterly_invested(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    from datetime import date as date_type
+
+    transactions = (
+        db.query(models.Transaction)
+        .filter_by(user_id=user_id)
+        .order_by(models.Transaction.date)
+        .all()
+    )
+    if not transactions:
+        return {"quarters": [], "categories": []}
+
+    tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
+    categories_map = {c.id: c for c in db.query(models.Category).filter_by(user_id=user_id).all()}
+    fx_rows = db.query(models.FxHistory).all()
+
+    def to_yq(d):
+        return d.year, (d.month - 1) // 3 + 1
+
+    def next_yq(y, q):
+        return (y + 1, 1) if q == 4 else (y, q + 1)
+
+    def quarter_end(y, q):
+        last_month = q * 3
+        last_day = {3: 31, 6: 30, 9: 30, 12: 31}[last_month]
+        return date_type(y, last_month, last_day)
+
+    first_date = date_type.fromisoformat(transactions[0].date)
+    today = date_type.today()
+
+    # Build ordered list of all quarters from first transaction to current
+    quarters = []
+    y, q = to_yq(first_date)
+    cy, cq = to_yq(today)
+    while (y, q) <= (cy, cq):
+        quarters.append((y, q))
+        y, q = next_yq(y, q)
+
+    quarter_labels = [f"{y}-Q{q}" for y, q in quarters]
+    quarter_end_dates = [quarter_end(y, q) for y, q in quarters]
+
+    # Compute per-transaction INR amount (signed: buy +, sell -)
+    txn_data = []
+    for t in transactions:
+        ticker = tickers_map.get(t.ticker_id)
+        if not ticker:
+            continue
+        amount = t.units * t.price
+        if ticker.currency == "USD":
+            amount *= historical_fx(t.date, fx_rows)
+        if t.type == "Sell":
+            amount = -amount
+        txn_data.append({
+            "date": date_type.fromisoformat(t.date),
+            "cat_id": ticker.category_id,
+            "amount_inr": amount,
+        })
+
+    txn_data.sort(key=lambda x: x["date"])
+
+    all_cat_ids = list({t["cat_id"] for t in txn_data})
+    cumulative = {cat_id: 0.0 for cat_id in all_cat_ids}
+    txn_idx = 0
+    n = len(txn_data)
+
+    snapshots = []
+    for qend in quarter_end_dates:
+        while txn_idx < n and txn_data[txn_idx]["date"] <= qend:
+            td = txn_data[txn_idx]
+            cumulative[td["cat_id"]] = cumulative.get(td["cat_id"], 0.0) + td["amount_inr"]
+            txn_idx += 1
+        snapshots.append({cat_id: max(0.0, val) for cat_id, val in cumulative.items()})
+
+    result_categories = []
+    for cat_id in all_cat_ids:
+        cat_obj = categories_map.get(cat_id)
+        result_categories.append({
+            "name": cat_obj.name if cat_obj else "Uncategorized",
+            "color": cat_obj.color if cat_obj else "#888888",
+            "values": [snap.get(cat_id, 0.0) for snap in snapshots],
+        })
+
+    result_categories.sort(
+        key=lambda c: c["values"][-1] if c["values"] else 0,
+        reverse=True,
+    )
+
+    return {"quarters": quarter_labels, "categories": result_categories}
+
+
+# ── Live Prices: update ticker symbol ────────────────────────────────────────
+
+@app.put("/api/v1/tickers/{ticker_id}/symbol")
+def update_ticker_symbol(
+    ticker_id: int,
+    payload: schemas.TickerSymbolUpdate,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    t = db.query(models.Ticker).filter_by(id=ticker_id, user_id=user_id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticker not found")
+    t.symbol = payload.symbol.upper().strip()
+    db.commit()
+    return {"ticker_id": ticker_id, "symbol": t.symbol}
+
+
+# ── MF: search schemes via mfapi.in ──────────────────────────────────────────
+
+@app.get("/api/v1/mf/search")
+def search_mf_schemes(
+    q: str = Query(..., min_length=2),
+    _user_id: str = Depends(get_current_user),
+):
+    import httpx
+    try:
+        resp = httpx.get(
+            f"https://api.mfapi.in/mf/search",
+            params={"q": q},
+            timeout=10,
+        )
+        return resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"mfapi search failed: {e}")
+
+
+# ── Live Prices: get latest stored price per ticker ──────────────────────────
+
+@app.get("/api/v1/price-history/latest", response_model=schemas.PriceHistoryLatestResponse)
+def get_latest_prices(
+    ticker_ids: str = Query(...),   # comma-separated ints
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    ids = [int(i) for i in ticker_ids.split(",") if i.strip()]
+    results = []
+    for ticker_id in ids:
+        ticker = db.query(models.Ticker).filter_by(id=ticker_id, user_id=user_id).first()
+        if not ticker or not ticker.symbol:
+            continue
+        symbol = ticker.symbol.upper()
+        row = (
+            db.query(models.PriceHistory)
+            .filter_by(symbol=symbol)
+            .order_by(models.PriceHistory.date.desc())
+            .first()
+        )
+        if row:
+            results.append(schemas.PriceHistoryLatestResult(
+                ticker_id=ticker_id, symbol=symbol,
+                latest_close=row.close, latest_date=row.date,
+            ))
+    return schemas.PriceHistoryLatestResponse(results=results)
+
+
+# ── Live Prices: fetch price history from Alpha Vantage ──────────────────────
+
+@app.post("/api/v1/price-history/fetch", response_model=schemas.PriceHistoryFetchResponse)
+def fetch_price_history(
+    payload: schemas.PriceHistoryFetchRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    import httpx
+
+    # 1. Get AV API key from user config
+    cfg = db.query(models.Config).filter_by(user_id=user_id, key="av_api_key").first()
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Alpha Vantage API key not configured")
+
+    api_key = cfg.value.strip()
+    results = []
+
+    for ticker_id in payload.ticker_ids:
+        # 2. Verify ownership and get symbol
+        ticker = db.query(models.Ticker).filter_by(id=ticker_id, user_id=user_id).first()
+        if not ticker:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol="", status="error",
+                rows_stored=0, error_detail="Ticker not found"
+            ))
+            continue
+        if not ticker.symbol:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol="", status="no_symbol", rows_stored=0
+            ))
+            continue
+
+        symbol = ticker.symbol.upper()
+
+        # 3. Call Alpha Vantage (sequential)
+        try:
+            url = (
+                f"https://www.alphavantage.co/query"
+                f"?function=TIME_SERIES_MONTHLY&symbol={symbol}&apikey={api_key}"
+            )
+            response = httpx.get(url, timeout=15)
+            data = response.json()
+        except Exception as e:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol=symbol, status="error",
+                rows_stored=0, error_detail=str(e)
+            ))
+            continue
+
+        # 4. Detect AV error responses (all arrive as HTTP 200)
+        if "Note" in data or "Information" in data:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol=symbol, status="rate_limited", rows_stored=0
+            ))
+            break  # quota exhausted — stop processing remaining tickers
+
+        if "Error Message" in data:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol=symbol, status="invalid_symbol", rows_stored=0
+            ))
+            continue
+
+        # 5. Parse and upsert monthly rows
+        monthly = data.get("Monthly Time Series", {})
+        rows_stored = 0
+        latest_close = None
+        latest_date = None
+
+        for date_str, values in monthly.items():
+            close = float(values["4. close"])
+            high  = float(values["2. high"])
+            low   = float(values["3. low"])
+            open_ = float(values["1. open"])
+
+            existing = db.query(models.PriceHistory).filter_by(
+                symbol=symbol, granularity="monthly", date=date_str
+            ).first()
+            if existing:
+                existing.close = close
+                existing.high = high
+                existing.low = low
+                existing.open = open_
+                existing.fetched_at = now_iso()
+            else:
+                row = models.PriceHistory(
+                    symbol=symbol, granularity="monthly", date=date_str,
+                    close=close, high=high, low=low, open=open_,
+                    source="alpha_vantage", fetched_at=now_iso()
+                )
+                db.add(row)
+
+            rows_stored += 1
+            if latest_date is None or date_str > latest_date:
+                latest_date = date_str
+                latest_close = close
+
+        db.commit()
+        results.append(schemas.PriceHistoryFetchResult(
+            ticker_id=ticker_id, symbol=symbol, status="success",
+            rows_stored=rows_stored, latest_close=latest_close, latest_date=latest_date
+        ))
+
+    return schemas.PriceHistoryFetchResponse(results=results)
+
+
+# ── Live Prices: fetch NAV history from mfapi.in ─────────────────────────────
+
+@app.post("/api/v1/price-history/fetch-mf", response_model=schemas.PriceHistoryFetchResponse)
+def fetch_mf_price_history(
+    payload: schemas.PriceHistoryFetchRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    import httpx
+    from datetime import date as date_type, timedelta
+
+    today = date_type.today()
+    start = today - timedelta(days=365 * 2)
+    end_str   = today.strftime("%d-%m-%Y")
+    start_str = start.strftime("%d-%m-%Y")
+
+    results = []
+
+    for ticker_id in payload.ticker_ids:
+        # 1. Verify ownership and get scheme code
+        ticker = db.query(models.Ticker).filter_by(id=ticker_id, user_id=user_id).first()
+        if not ticker:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol="", status="error",
+                rows_stored=0, error_detail="Ticker not found"
+            ))
+            continue
+        if not ticker.symbol:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol="", status="no_symbol", rows_stored=0
+            ))
+            continue
+
+        scheme_code = ticker.symbol.strip()
+
+        # 2. Call mfapi.in with 2-year date range
+        try:
+            url = f"https://api.mfapi.in/mf/{scheme_code}"
+            response = httpx.get(url, params={"startDate": start_str, "endDate": end_str}, timeout=15)
+            data = response.json()
+        except Exception as e:
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol=scheme_code, status="error",
+                rows_stored=0, error_detail=str(e)
+            ))
+            continue
+
+        # 3. Validate response
+        if data.get("status") != "SUCCESS" or not data.get("data"):
+            results.append(schemas.PriceHistoryFetchResult(
+                ticker_id=ticker_id, symbol=scheme_code, status="invalid_symbol", rows_stored=0
+            ))
+            continue
+
+        # 4. Upsert daily NAV records
+        rows_stored  = 0
+        latest_close = None
+        latest_date  = None
+
+        for entry in data["data"]:
+            # Convert DD-MM-YYYY → YYYY-MM-DD
+            raw_date = entry["date"]          # e.g. "13-04-2026"
+            parts = raw_date.split("-")
+            date_str = f"{parts[2]}-{parts[1]}-{parts[0]}"   # "2026-04-13"
+            nav = float(entry["nav"])
+
+            existing = db.query(models.PriceHistory).filter_by(
+                symbol=scheme_code, granularity="daily", date=date_str
+            ).first()
+            if existing:
+                existing.close     = nav
+                existing.fetched_at = now_iso()
+            else:
+                row = models.PriceHistory(
+                    symbol=scheme_code, granularity="daily", date=date_str,
+                    close=nav, source="mfapi", fetched_at=now_iso()
+                )
+                db.add(row)
+
+            rows_stored += 1
+            if latest_date is None or date_str > latest_date:
+                latest_date  = date_str
+                latest_close = nav
+
+        db.commit()
+        results.append(schemas.PriceHistoryFetchResult(
+            ticker_id=ticker_id, symbol=scheme_code, status="success",
+            rows_stored=rows_stored, latest_close=latest_close, latest_date=latest_date
+        ))
+
+    return schemas.PriceHistoryFetchResponse(results=results)
+
+
+# ── Insights: Market Value History ───────────────────────────────────────────
+
+@app.get("/api/v1/insights/market-value-history", response_model=schemas.MarketValueResponse)
+def market_value_history(
+    category_ids: Optional[str] = Query(None),      # comma-separated ints
+    sector_ids: Optional[str] = Query(None),
+    ticker_ids_filter: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    from datetime import date as date_type
+    from calendar import monthrange
+
+    transactions = (
+        db.query(models.Transaction)
+        .filter_by(user_id=user_id)
+        .order_by(models.Transaction.date)
+        .all()
+    )
+    if not transactions:
+        return schemas.MarketValueResponse(
+            months=[], invested=[], market_value=[],
+            partial_months=[], has_any_partial=False
+        )
+
+    tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
+    fx_rows = db.query(models.FxHistory).all()
+
+    # Parse optional filter params
+    cat_filter  = {int(x) for x in category_ids.split(",") if x}    if category_ids      else None
+    sec_filter  = {int(x) for x in sector_ids.split(",") if x}      if sector_ids        else None
+    tkr_filter  = {int(x) for x in ticker_ids_filter.split(",") if x} if ticker_ids_filter else None
+
+    def ticker_in_filter(ticker) -> bool:
+        if tkr_filter is not None and ticker.id not in tkr_filter:
+            return False
+        if cat_filter is not None and ticker.category_id not in cat_filter:
+            return False
+        if sec_filter is not None and ticker.sector_id not in sec_filter:
+            return False
+        return True
+
+    # Build price lookup: {symbol: {ym: close}}  (ym = 'YYYY-MM')
+    # Ordered ASC so the latest date in each month wins (handles both monthly AV
+    # records and daily mfapi records stored with granularity="daily").
+    all_symbols = list({t.symbol for t in tickers_map.values() if t.symbol})
+    price_lookup: dict[str, dict[str, float]] = {}
+    if all_symbols:
+        for ph in db.query(models.PriceHistory).filter(
+            models.PriceHistory.symbol.in_(all_symbols),
+            models.PriceHistory.granularity.in_(["monthly", "daily"]),
+        ).order_by(models.PriceHistory.date.asc()).all():
+            ym = ph.date[:7]
+            price_lookup.setdefault(ph.symbol, {})[ym] = ph.close
+
+    # Build monthly timeline from first transaction → today
+    first_date = date_type.fromisoformat(transactions[0].date)
+    today = date_type.today()
+
+    def month_end(y: int, m: int) -> date_type:
+        return date_type(y, m, monthrange(y, m)[1])
+
+    def next_ym(y: int, m: int):
+        return (y + 1, 1) if m == 12 else (y, m + 1)
+
+    months: list[str] = []
+    month_ends: list[date_type] = []
+    y, m = first_date.year, first_date.month
+    while (y, m) <= (today.year, today.month):
+        months.append(f"{y:04d}-{m:02d}")
+        month_ends.append(month_end(y, m))
+        y, m = next_ym(y, m)
+
+    # Replay transactions month by month (mirrors quarterly_invested pattern)
+    txn_sorted = sorted(transactions, key=lambda t: t.date)
+    txn_idx = 0
+    n = len(txn_sorted)
+    holdings: dict[int, dict] = {}  # ticker_id -> {units, cost_inr}
+
+    invested_series: list[float] = []
+    market_value_series: list[float] = []
+    partial_months: list[bool] = []
+
+    for mend, ym in zip(month_ends, months):
+        mend_str = mend.isoformat()
+
+        # Advance transactions up to this month-end
+        while txn_idx < n and txn_sorted[txn_idx].date <= mend_str:
+            t = txn_sorted[txn_idx]
+            ticker = tickers_map.get(t.ticker_id)
+            if ticker:
+                if t.ticker_id not in holdings:
+                    holdings[t.ticker_id] = {"units": 0.0, "cost_inr": 0.0}
+                h = holdings[t.ticker_id]
+                fx = historical_fx(t.date, fx_rows) if ticker.currency == "USD" else 1.0
+                if t.type == "Buy":
+                    h["units"] += t.units
+                    h["cost_inr"] += t.units * t.price * fx
+                else:  # Sell — reduce proportionally
+                    if h["units"] > 0:
+                        avg_cost = h["cost_inr"] / h["units"]
+                        h["units"] = max(0.0, h["units"] - t.units)
+                        h["cost_inr"] = max(0.0, h["cost_inr"] - t.units * avg_cost)
+            txn_idx += 1
+
+        total_invested = 0.0
+        total_market = 0.0
+        is_partial = False
+
+        for ticker_id, h in holdings.items():
+            if h["units"] < 0.001:
+                continue
+            ticker = tickers_map.get(ticker_id)
+            if not ticker or not ticker_in_filter(ticker):
+                continue
+
+            cost_inr = h["cost_inr"]
+            total_invested += cost_inr
+
+            # Use price history if available, else fall back to cost basis
+            sym = ticker.symbol
+            if sym and sym in price_lookup and ym in price_lookup[sym]:
+                close = price_lookup[sym][ym]
+                fx = historical_fx(mend_str, fx_rows) if ticker.currency == "USD" else 1.0
+                total_market += h["units"] * close * fx
+            else:
+                total_market += cost_inr
+                is_partial = True
+
+        invested_series.append(round(total_invested))
+        market_value_series.append(round(total_market))
+        partial_months.append(is_partial)
+
+    return schemas.MarketValueResponse(
+        months=months,
+        invested=invested_series,
+        market_value=market_value_series,
+        partial_months=partial_months,
+        has_any_partial=any(partial_months),
+    )
