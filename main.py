@@ -898,7 +898,7 @@ def fetch_price_history(
 
         symbol = ticker.symbol.upper()
 
-        # 3. Call Alpha Vantage (sequential)
+        # 3. Call Alpha Vantage
         try:
             url = (
                 f"https://www.alphavantage.co/query"
@@ -981,7 +981,7 @@ def fetch_mf_price_history(
     from datetime import date as date_type, timedelta
 
     today = date_type.today()
-    start = today - timedelta(days=365 * 2)
+    start = today - timedelta(days=30)
     end_str   = today.strftime("%d-%m-%Y")
     start_str = start.strftime("%d-%m-%Y")
 
@@ -1004,7 +1004,7 @@ def fetch_mf_price_history(
 
         scheme_code = ticker.symbol.strip()
 
-        # 2. Call mfapi.in with 2-year date range
+        # 2. Call mfapi.in with 30-day date range
         try:
             url = f"https://api.mfapi.in/mf/{scheme_code}"
             response = httpx.get(url, params={"startDate": start_str, "endDate": end_str}, timeout=15)

@@ -123,20 +123,26 @@ const f4 = v => +parseFloat(v).toFixed(4);
 let importParseResult = null;
 
 // ── API helpers ───────────────────────────────────────────────────────────────
-async function api(method, path, body) {
+async function api(method, path, body, timeoutMs = 40000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers = { 'Content-Type': 'application/json' };
   if (_session?.access_token) {
     headers['Authorization'] = 'Bearer ' + _session.access_token;
   }
-  const opts = { method, headers };
+  const opts = { method, headers, signal: controller.signal };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const res = await fetch('/api/v1' + path, opts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || res.statusText);
+  try {
+    const res = await fetch('/api/v1' + path, opts);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  } finally {
+    clearTimeout(timer);
   }
-  if (res.status === 204) return null;
-  return res.json();
 }
 
 async function apiUpload(path, formData) {
@@ -1773,7 +1779,7 @@ async function fetchSelectedMfPrices() {
     mvRawData = null;
 
   } catch (err) {
-    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.textContent = err.name === 'AbortError' ? 'Request timed out — try again.' : 'Error: ' + err.message;
     statusEl.className = 'lp-fetch-status error';
   } finally {
     btn.disabled = false;
@@ -1839,7 +1845,7 @@ async function fetchSelectedPrices() {
     mvRawData = null;
 
   } catch (err) {
-    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.textContent = err.name === 'AbortError' ? 'Request timed out — try again.' : 'Error: ' + err.message;
     statusEl.className = 'lp-fetch-status error';
   } finally {
     btn.disabled = false;
