@@ -9,8 +9,6 @@ const state = {
   positions: null,    // full GET /positions response
   transactions: [],
   tickers: [],
-  prices: {},
-  pricesDetail: [],
   brokers: [],
   categories: [],
   sectors: [],
@@ -41,15 +39,29 @@ function pickAutoColor(type) {
   return COLOR_PALETTE.find(c => !used.includes(c)) ?? COLOR_PALETTE[used.length % COLOR_PALETTE.length];
 }
 
-function refreshAllSelectsOfType(type, newId) {
+function refreshAllSelectsOfType(type, newId, triggerEl) {
   const items = type === 'category' ? state.categories : state.sectors;
   const selector = type === 'category'
     ? '#new-ticker-category, .resolve-category'
     : '#new-ticker-sector, .resolve-sector';
   document.querySelectorAll(selector).forEach(sel => {
-    sel.innerHTML = items.map(x =>
-      `<option value="${x.id}" ${x.id === newId ? 'selected' : ''}>${x.name}</option>`
+    const currentVal = sel.value;
+    // Fund cards (.resolve-*) need a blank "none" first option; Add-Fund form selects don't
+    const isCard = sel.classList.contains('resolve-category') || sel.classList.contains('resolve-sector');
+    const blankOption = isCard ? `<option value="">— none —</option>` : '';
+    sel.innerHTML = blankOption + items.map(x =>
+      `<option value="${x.id}">${x.name}</option>`
     ).join('');
+    if (sel === triggerEl) {
+      sel.value = newId;
+    } else {
+      sel.value = currentVal;
+    }
+    // If this is a fund card, update its badge after refresh
+    if (isCard) {
+      const card = sel.closest('.import-fund-card');
+      if (card) updateFundCardBadge(card);
+    }
   });
 }
 
@@ -98,7 +110,7 @@ function attachSelectAdd(selectEl, type) {
       } else {
         state.sectors = await api('GET', '/sectors');
       }
-      refreshAllSelectsOfType(type, created.id);
+      refreshAllSelectsOfType(type, created.id, selectEl);
       inline.classList.remove('open');
     } catch (err) {
       error.textContent = err.message || 'Error saving';
@@ -136,6 +148,9 @@ async function api(method, path, body, timeoutMs = 40000) {
     const res = await fetch('/api/v1' + path, opts);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
+      // #region agent log
+      fetch('http://127.0.0.1:7399/ingest/c1ec48c9-176a-410f-a47c-ad1e630a6960',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0843e8'},body:JSON.stringify({sessionId:'0843e8',location:'app.js:151',message:'api error response',data:{path,status:res.status,errDetail:err.detail,errDetailType:Array.isArray(err.detail)?'array':typeof err.detail,errDetailStr:JSON.stringify(err.detail)},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
       throw new Error(err.detail || res.statusText);
     }
     if (res.status === 204) return null;
@@ -220,8 +235,8 @@ async function bootAuth() {
       showApp();
       // Reset state so we don't show stale data from another user
       Object.assign(state, {
-        positions: null, transactions: [], tickers: [], prices: {},
-        pricesDetail: [], brokers: [], categories: [], sectors: [],
+        positions: null, transactions: [], tickers: [],
+        brokers: [], categories: [], sectors: [],
         fxRate: 86, txnTickerFilter: null,
       });
       expandedGroups = new Set();
@@ -327,19 +342,10 @@ function setupAuthForms() {
 async function init() {
   // Wire up all UI event handlers immediately — no dependency on data
   setupNav();
-  setupFxInput();
   setupTransactionFilters();
   document.getElementById('txn-download-btn').addEventListener('click', downloadTransactionsCSV);
   setupAddForm();
   setupLivePricesTab();
-  setupNudge();
-
-  // Read stored FX rate
-  try {
-    const cfg = await api('GET', '/config/fx_rate_usd_inr');
-    state.fxRate = parseFloat(cfg.value) || 86;
-    document.getElementById('fx-rate').value = state.fxRate;
-  } catch (_) {}
 
   // Fetch all data — wrapped so a failure doesn't leave UI dead
   try {
@@ -347,9 +353,7 @@ async function init() {
       fetchPositions(),
       api('GET', '/transactions').then(d => { state.transactions = d; }),
       api('GET', '/tickers').then(d => { state.tickers = d; }),
-      api('GET', '/prices').then(d => { state.prices = d; }),
-      api('GET', '/prices/detail').then(d => { state.pricesDetail = d; }),
-      api('GET', '/brokers').then(d => { state.brokers = d; }),
+      api('GET', '/brokers').then(d => { state.brokers = d; fetch('http://127.0.0.1:7399/ingest/c1ec48c9-176a-410f-a47c-ad1e630a6960',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0843e8'},body:JSON.stringify({sessionId:'0843e8',location:'app.js:353',message:'brokers fetched',data:{count:d.length,brokers:d},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{}); }),
       api('GET', '/categories').then(d => { state.categories = d; }),
       api('GET', '/sectors').then(d => { state.sectors = d; }),
     ]);
@@ -372,8 +376,6 @@ function renderAll() {
   renderPositions();
   renderInsights();
   renderTransactions();
-  setupPriceFilters();
-  renderPrices();
   renderAddForm();
 }
 
@@ -397,31 +399,14 @@ function showView(view, tickerFilter) {
     state.txnTickerFilter = tickerFilter;
     renderTransactions();
   }
+  if (view === 'prices') {
+    const activeTab = document.querySelector('.lp-subtab.active')?.dataset.lpTab;
+    if (activeTab === 'us-equity') renderLivePricesTable();
+    else if (activeTab === 'indian-mf') renderMfTable();
+    else renderCsvUploadTable();
+  }
 }
 
-// ── FX rate ───────────────────────────────────────────────────────────────────
-function setupFxInput() {
-  const input = document.getElementById('fx-rate');
-  let debounce;
-
-  input.addEventListener('input', () => {
-    clearTimeout(debounce);
-    debounce = setTimeout(async () => {
-      const v = parseFloat(input.value);
-      if (!v || v <= 0) return;
-      await fetchPositions(v);
-      renderPositions();
-      renderInsights();
-      document.getElementById('fx-note').textContent = 'updated ' + new Date().toLocaleTimeString();
-    }, 400);
-  });
-
-  input.addEventListener('blur', async () => {
-    const v = parseFloat(input.value);
-    if (!v || v <= 0) return;
-    await api('PUT', '/config/fx_rate_usd_inr', { value: String(v) }).catch(() => {});
-  });
-}
 
 // ── Positions ─────────────────────────────────────────────────────────────────
 function renderPositions() {
@@ -530,8 +515,6 @@ function renderPositions() {
     }
   }
 
-  // Allocation bars
-  buildAllocBars(p);
 }
 
 function renderPnlCell(pnlInr, pnlPct) {
@@ -541,48 +524,6 @@ function renderPnlCell(pnlInr, pnlPct) {
     <div class="pnl-amt ${cls}">${pnlInr >= 0 ? '+' : '-'}${inrK(Math.abs(pnlInr))}</div>
     <div class="pnl-pct ${cls}">${pct(pnlPct)}</div>
   </div>`;
-}
-
-function buildAllocBars(p) {
-  // By category
-  const catEl = document.getElementById('alloc-cat');
-  catEl.innerHTML = '';
-  for (const g of p.by_category) {
-    const pv = g.weight_pct ?? 0;
-    catEl.innerHTML += `
-      <div class="alloc-row">
-        <div class="alloc-label">${g.category}</div>
-        <div class="alloc-bar-wrap"><div class="alloc-bar" style="width:${pv.toFixed(1)}%;background:${g.color}"></div></div>
-        <div class="alloc-pct" style="color:${g.color}">${pv.toFixed(1)}%</div>
-      </div>`;
-  }
-
-  // By sector — aggregate from positions
-  const sectorMap = {};
-  for (const g of p.by_category) {
-    for (const pos of g.positions) {
-      const sec = pos.sector || 'Others';
-      if (!sectorMap[sec]) sectorMap[sec] = { value: 0, invested: 0 };
-      sectorMap[sec].value += pos.value_inr ?? pos.invested_inr ?? 0;
-      sectorMap[sec].invested += pos.invested_inr ?? 0;
-    }
-  }
-  const totalVal = Object.values(sectorMap).reduce((s, v) => s + v.value, 0);
-  const sectorEl = document.getElementById('alloc-sector');
-  sectorEl.innerHTML = '';
-  const sectorColors = {};
-  for (const s of state.sectors) sectorColors[s.name] = s.color;
-
-  for (const [name, vals] of Object.entries(sectorMap).sort((a, b) => b[1].value - a[1].value)) {
-    const pv = totalVal > 0 ? (vals.value / totalVal * 100) : 0;
-    const col = sectorColors[name] || '#9a9aa3';
-    sectorEl.innerHTML += `
-      <div class="alloc-row">
-        <div class="alloc-label">${name}</div>
-        <div class="alloc-bar-wrap"><div class="alloc-bar" style="width:${pv.toFixed(1)}%;background:${col}"></div></div>
-        <div class="alloc-pct" style="color:${col}">${pv.toFixed(1)}%</div>
-      </div>`;
-  }
 }
 
 // ── Insights ───────────────────────────────────────────────────────────────────
@@ -805,6 +746,7 @@ function renderQuarterlyChart() {
             color: 'var(--muted)',
             callback: v => inrK(v),
           },
+          grace: '15%',
         },
       },
       plugins: {
@@ -861,8 +803,14 @@ function downloadTransactionsCSV() {
   const typeFilter = document.getElementById('txn-type-filter').value;
   const days = txnDaysFilter ? parseInt(txnDaysFilter) : null;
 
+  const fundFilter = parseInt(document.getElementById('txn-fund-filter').value) || null;
+  const categoryFilter = parseInt(document.getElementById('txn-category-filter').value) || null;
+  const sectorFilter = parseInt(document.getElementById('txn-sector-filter').value) || null;
+
   let txns = state.transactions;
-  if (state.txnTickerFilter) txns = txns.filter(t => t.ticker_id === state.txnTickerFilter);
+  if (fundFilter) txns = txns.filter(t => t.ticker_id === fundFilter);
+  if (categoryFilter) txns = txns.filter(t => state.tickers.find(tk => tk.id === t.ticker_id)?.category_id === categoryFilter);
+  if (sectorFilter) txns = txns.filter(t => state.tickers.find(tk => tk.id === t.ticker_id)?.sector_id === sectorFilter);
   if (brokerFilter) txns = txns.filter(t => t.broker_id === brokerFilter);
   if (typeFilter) txns = txns.filter(t => t.type === typeFilter);
   if (days) {
@@ -899,8 +847,14 @@ function downloadTransactionsCSV() {
 function setupTransactionFilters() {
   const brokerSel = document.getElementById('txn-broker-filter');
   const typeSel = document.getElementById('txn-type-filter');
+  const fundSel = document.getElementById('txn-fund-filter');
+  const categorySel = document.getElementById('txn-category-filter');
+  const sectorSel = document.getElementById('txn-sector-filter');
   const daysBtns = document.querySelectorAll('.filter-btn[data-days]');
 
+  fundSel.addEventListener('change', renderTransactions);
+  categorySel.addEventListener('change', renderTransactions);
+  sectorSel.addEventListener('change', renderTransactions);
   brokerSel.addEventListener('change', renderTransactions);
   typeSel.addEventListener('change', renderTransactions);
   daysBtns.forEach(btn => {
@@ -914,6 +868,57 @@ function setupTransactionFilters() {
 }
 
 function renderTransactions() {
+  // Populate fund dropdown — sync from state.txnTickerFilter if set (navigation from positions)
+  const fundSel = document.getElementById('txn-fund-filter');
+  const desiredFund = state.txnTickerFilter ? String(state.txnTickerFilter) : fundSel.value;
+  if (state.txnTickerFilter) state.txnTickerFilter = null;
+  if (fundSel.options.length <= 1) {
+    const usedTickerIds = new Set(state.transactions.map(t => t.ticker_id));
+    for (const tk of state.tickers.filter(tk => usedTickerIds.has(tk.id))) {
+      const opt = document.createElement('option');
+      opt.value = tk.id;
+      opt.textContent = displayName(tk);
+      fundSel.appendChild(opt);
+    }
+  }
+  fundSel.value = desiredFund;
+
+  // Populate category dropdown — always rebuild so new tickers/categories are reflected
+  const categorySel = document.getElementById('txn-category-filter');
+  const selectedCategory = categorySel.value;
+  categorySel.innerHTML = '<option value="">All categories</option>';
+  for (const c of state.categories) {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    categorySel.appendChild(opt);
+  }
+  if (state.tickers.some(t => t.category_id == null)) {
+    const opt = document.createElement('option');
+    opt.value = 'uncategorized';
+    opt.textContent = '— Uncategorized';
+    categorySel.appendChild(opt);
+  }
+  categorySel.value = selectedCategory;
+
+  // Populate sector dropdown — always rebuild
+  const sectorSel = document.getElementById('txn-sector-filter');
+  const selectedSector = sectorSel.value;
+  sectorSel.innerHTML = '<option value="">All sectors</option>';
+  for (const s of state.sectors) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name;
+    sectorSel.appendChild(opt);
+  }
+  if (state.tickers.some(t => t.sector_id == null)) {
+    const opt = document.createElement('option');
+    opt.value = 'no-sector';
+    opt.textContent = '— No sector';
+    sectorSel.appendChild(opt);
+  }
+  sectorSel.value = selectedSector;
+
   // Populate broker dropdown
   const brokerSel = document.getElementById('txn-broker-filter');
   const selectedBroker = brokerSel.value;
@@ -927,14 +932,39 @@ function renderTransactions() {
   }
   brokerSel.value = selectedBroker;
 
+  const fundFilter = parseInt(fundSel.value) || null;
+  const categoryFilterRaw = categorySel.value;
+  const categoryFilter = categoryFilterRaw === 'uncategorized' ? 'uncategorized' : (parseInt(categoryFilterRaw) || null);
+  const sectorFilterRaw = sectorSel.value;
+  const sectorFilter = sectorFilterRaw === 'no-sector' ? 'no-sector' : (parseInt(sectorFilterRaw) || null);
   const brokerFilter = parseInt(brokerSel.value) || null;
   const typeFilter = document.getElementById('txn-type-filter').value;
   const days = txnDaysFilter ? parseInt(txnDaysFilter) : null;
 
   let txns = state.transactions;
 
-  if (state.txnTickerFilter) {
-    txns = txns.filter(t => t.ticker_id === state.txnTickerFilter);
+  if (fundFilter) txns = txns.filter(t => t.ticker_id === fundFilter);
+  if (categoryFilter === 'uncategorized') {
+    txns = txns.filter(t => {
+      const ticker = state.tickers.find(tk => tk.id === t.ticker_id);
+      return ticker?.category_id == null;
+    });
+  } else if (categoryFilter) {
+    txns = txns.filter(t => {
+      const ticker = state.tickers.find(tk => tk.id === t.ticker_id);
+      return ticker?.category_id === categoryFilter;
+    });
+  }
+  if (sectorFilter === 'no-sector') {
+    txns = txns.filter(t => {
+      const ticker = state.tickers.find(tk => tk.id === t.ticker_id);
+      return ticker?.sector_id == null;
+    });
+  } else if (sectorFilter) {
+    txns = txns.filter(t => {
+      const ticker = state.tickers.find(tk => tk.id === t.ticker_id);
+      return ticker?.sector_id === sectorFilter;
+    });
   }
   if (brokerFilter) txns = txns.filter(t => t.broker_id === brokerFilter);
   if (typeFilter) txns = txns.filter(t => t.type === typeFilter);
@@ -944,10 +974,7 @@ function renderTransactions() {
     txns = txns.filter(t => new Date(t.date) >= cutoff);
   }
 
-  const filterTicker = state.txnTickerFilter
-    ? state.tickers.find(tk => tk.id === state.txnTickerFilter) : null;
-  document.getElementById('txn-sub').textContent =
-    `${txns.length} transactions${filterTicker ? ' · filtered by ' + displayName(filterTicker) : ''}`;
+  document.getElementById('txn-sub').textContent = `${txns.length} transactions`;
 
   const tbody = document.getElementById('txn-tbody');
   tbody.innerHTML = '';
@@ -990,199 +1017,6 @@ function renderTransactions() {
   });
 }
 
-// ── Prices ─────────────────────────────────────────────────────────────────────
-let priceFundFilter = '';
-let priceCategoryFilter = '';
-let priceSectorFilter = '';
-let priceCurrencyFilter = '';
-
-function renderPrices() {
-  const tbody = document.getElementById('prices-tbody');
-  tbody.innerHTML = '';
-
-  // Build lookup: ticker_id → { price, updated_at }
-  const priceMap = {};
-  for (const p of state.pricesDetail) priceMap[p.ticker_id] = p;
-
-  // Most recent buy transaction price for a ticker (fallback for unpriced tickers)
-  function lastBuy(tickerId) {
-    return state.transactions
-      .filter(t => t.ticker_id === tickerId && t.type === 'Buy')
-      .sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
-  }
-
-  // Apply filters
-  let tickers = state.tickers;
-  if (priceFundFilter) tickers = tickers.filter(t => displayName(t).toLowerCase().includes(priceFundFilter.toLowerCase()));
-  if (priceCategoryFilter) tickers = tickers.filter(t => t.category_id == priceCategoryFilter);
-  if (priceSectorFilter) tickers = tickers.filter(t => t.sector_id == priceSectorFilter);
-  if (priceCurrencyFilter) tickers = tickers.filter(t => t.currency === priceCurrencyFilter);
-
-  // Sort: unpriced first, then by updated_at ASC
-  const sorted = [...tickers].sort((a, b) => {
-    const pa = priceMap[a.id], pb = priceMap[b.id];
-    if (!pa?.updated_at && !pb?.updated_at) return 0;
-    if (!pa?.updated_at) return -1;
-    if (!pb?.updated_at) return 1;
-    return pa.updated_at.localeCompare(pb.updated_at);
-  });
-
-  for (const ticker of sorted) {
-    const priceRow = priceMap[ticker.id];
-    const cur = ticker.currency || 'INR';
-    const isPrefill = !priceRow;
-    const fallback = isPrefill ? lastBuy(ticker.id) : null;
-    const priceVal = priceRow ? priceRow.price : (fallback?.price ?? '');
-    const updatedAt = priceRow?.updated_at ?? null;
-
-    const lastUpdatedHtml = updatedAt
-      ? `<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${new Date(updatedAt).toLocaleString()}</span>`
-      : isPrefill && fallback
-        ? `<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">last txn · ${fallback.date}</span>`
-        : isPrefill && !fallback
-          ? `<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">No buy txn price available</span>`
-          : `<span style="color:var(--red);font-family:var(--mono);font-size:11px">never</span>`;
-
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="font-size:12px;color:var(--muted2)">${displayName(ticker) || '—'}</td>
-      <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${cur}</td>
-      <td class="num">
-        <input class="price-input${isPrefill ? ' price-prefill' : ''}"
-          type="number" step="any" value="${priceVal}"
-          data-ticker-id="${ticker.id}" data-orig="${priceVal}"
-          ${isPrefill ? 'data-prefill="true"' : ''}>
-      </td>
-      <td><button class="price-save-btn" disabled data-ticker-id="${ticker.id}">Save</button></td>
-      <td>${lastUpdatedHtml}</td>
-    `;
-    tbody.appendChild(tr);
-    if (isPrefill && priceVal !== '') {
-      tr.querySelector('.price-save-btn').disabled = false;
-    }
-  }
-
-  const syncSaveAllBtn = () => {
-    const saveAllBtn = document.getElementById('save-all-prices-btn');
-    if (saveAllBtn) saveAllBtn.disabled = !tbody.querySelector('.price-save-btn:not(:disabled)');
-  };
-
-  tbody.querySelectorAll('.price-input').forEach(input => {
-    input.addEventListener('input', () => {
-      const v = parseFloat(input.value);
-      const btn = tbody.querySelector(`.price-save-btn[data-ticker-id="${input.dataset.tickerId}"]`);
-      btn.disabled = !v || v <= 0 || v === parseFloat(input.dataset.orig);
-      syncSaveAllBtn();
-    });
-  });
-
-  // Sync Save all after initial pre-fill enable
-  syncSaveAllBtn();
-
-  const saveAllBtn = document.getElementById('save-all-prices-btn');
-  if (saveAllBtn) {
-    // Replace listener to avoid stacking on re-renders
-    const newBtn = saveAllBtn.cloneNode(true);
-    newBtn.textContent = 'Save all prices';
-    saveAllBtn.parentNode.replaceChild(newBtn, saveAllBtn);
-    newBtn.disabled = !tbody.querySelector('.price-save-btn:not(:disabled)');
-    newBtn.addEventListener('click', async () => {
-      const enabledBtns = [...tbody.querySelectorAll('.price-save-btn:not(:disabled)')];
-      if (!enabledBtns.length) return;
-      newBtn.disabled = true;
-      newBtn.textContent = 'Saving…';
-      const results = await Promise.allSettled(enabledBtns.map(async btn => {
-        const tickerId = btn.dataset.tickerId;
-        const input = tbody.querySelector(`.price-input[data-ticker-id="${tickerId}"]`);
-        const v = parseFloat(input.value);
-        if (!v || v <= 0) throw new Error('invalid');
-        btn.disabled = true;
-        btn.textContent = 'Saving…';
-        await api('PUT', `/prices/${tickerId}`, { price: v });
-        input.dataset.orig = v;
-        input.dataset.prefill = '';
-        input.classList.remove('price-prefill');
-        btn.textContent = 'Save';
-      }));
-      const saved = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-      // Re-enable Save buttons for failed rows
-      enabledBtns.forEach((btn, i) => {
-        if (results[i].status === 'rejected') {
-          btn.disabled = false;
-          btn.textContent = 'Save';
-        }
-      });
-      await fetchPositions();
-      await api('GET', '/prices').then(d => { state.prices = d; });
-      await api('GET', '/prices/detail').then(d => { state.pricesDetail = d; });
-      renderPositions();
-      renderInsights();
-      renderPrices();
-      if (failed) showToast(`${saved} saved · ${failed} failed`, 'error');
-      else showToast(`${saved} price${saved !== 1 ? 's' : ''} saved`);
-    });
-  }
-
-  tbody.querySelectorAll('.price-save-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const tickerId = btn.dataset.tickerId;
-      const input = tbody.querySelector(`.price-input[data-ticker-id="${tickerId}"]`);
-      const v = parseFloat(input.value);
-      if (!v || v <= 0) return;
-      btn.disabled = true;
-      btn.textContent = 'Saving…';
-      syncSaveAllBtn();
-      try {
-        await api('PUT', `/prices/${tickerId}`, { price: v });
-        input.dataset.orig = v;
-        input.dataset.prefill = '';
-        input.classList.remove('price-prefill');
-        await fetchPositions();
-        await api('GET', '/prices').then(d => { state.prices = d; });
-        await api('GET', '/prices/detail').then(d => { state.pricesDetail = d; });
-        renderPositions();
-        renderInsights();
-        renderPrices();
-        const updatedTicker = state.tickers.find(t => t.id === parseInt(tickerId));
-        showToast(`Price updated: ${displayName(updatedTicker)}`);
-      } catch (err) {
-        btn.disabled = false;
-        btn.textContent = 'Save';
-        syncSaveAllBtn();
-        showToast('Error: ' + err.message, 'error');
-      }
-    });
-  });
-}
-
-function setupPriceFilters() {
-  const fundInput = document.getElementById('price-fund-filter');
-  const categorySel = document.getElementById('price-category-filter');
-  const sectorSel = document.getElementById('price-sector-filter');
-  const currencySel = document.getElementById('price-currency-filter');
-
-  // Populate category options
-  for (const c of state.categories) {
-    const opt = document.createElement('option');
-    opt.value = c.id;
-    opt.textContent = c.name;
-    categorySel.appendChild(opt);
-  }
-  // Populate sector options
-  for (const s of state.sectors) {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = s.name;
-    sectorSel.appendChild(opt);
-  }
-
-  fundInput.addEventListener('input', () => { priceFundFilter = fundInput.value; renderPrices(); });
-  categorySel.addEventListener('change', () => { priceCategoryFilter = categorySel.value; renderPrices(); });
-  sectorSel.addEventListener('change', () => { priceSectorFilter = sectorSel.value; renderPrices(); });
-  currencySel.addEventListener('change', () => { priceCurrencyFilter = currencySel.value; renderPrices(); });
-}
-
 // ── Add Form ───────────────────────────────────────────────────────────────────
 function renderAddForm() {
   // Populate category dropdown
@@ -1211,6 +1045,9 @@ function renderAddForm() {
   // Populate broker dropdown for transaction
   const brSel = document.getElementById('new-txn-broker');
   brSel.innerHTML = '';
+  // #region agent log
+  fetch('http://127.0.0.1:7399/ingest/c1ec48c9-176a-410f-a47c-ad1e630a6960',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0843e8'},body:JSON.stringify({sessionId:'0843e8',location:'app.js:1047',message:'renderAddForm broker populate',data:{brokersCount:state.brokers.length,brokers:state.brokers},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
   for (const b of state.brokers) {
     brSel.innerHTML += `<option value="${b.id}">${b.name}</option>`;
   }
@@ -1254,15 +1091,12 @@ function setupAddForm() {
       document.querySelectorAll('.add-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       const t = tab.dataset.tab;
-      const isTxn = t === 'transaction';
-      const isLivePrices = t === 'live-prices';
-      document.getElementById('add-ticker-form').style.display = t === 'ticker' ? '' : 'none';
-      document.getElementById('add-txn-form').style.display = isTxn ? '' : 'none';
-      document.getElementById('import-upload-card').style.display = isTxn ? '' : 'none';
+      const isManual = t === 'ticker';
+      document.getElementById('add-ticker-form').style.display = isManual ? '' : 'none';
+      document.getElementById('add-txn-form').style.display = isManual ? '' : 'none';
+      document.getElementById('import-divider').style.display = isManual ? '' : 'none';
+      document.getElementById('import-upload-card').style.display = isManual ? 'none' : '';
       document.getElementById('import-review-card').style.display = 'none';
-      document.getElementById('import-divider').style.display = isTxn ? '' : 'none';
-      document.getElementById('live-prices-panel').style.display = isLivePrices ? '' : 'none';
-      if (isLivePrices) renderLivePricesTable();
     });
   });
 
@@ -1296,6 +1130,9 @@ function setupAddForm() {
     const units = parseFloat(document.getElementById('new-txn-units').value);
     const price = parseFloat(document.getElementById('new-txn-price').value);
     const broker_id = parseInt(document.getElementById('new-txn-broker').value);
+    // #region agent log
+    fetch('http://127.0.0.1:7399/ingest/c1ec48c9-176a-410f-a47c-ad1e630a6960',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0843e8'},body:JSON.stringify({sessionId:'0843e8',location:'app.js:1131',message:'add-txn click values',data:{ticker_id,type,date,units,price,broker_id,broker_id_raw:document.getElementById('new-txn-broker').value,brokerOptions:document.getElementById('new-txn-broker').options.length},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
 
     if (!ticker_id || !date || !units || !price) return showToast('All fields required', 'error');
 
@@ -1321,12 +1158,14 @@ function setupAddForm() {
 
 // ── Import flow ───────────────────────────────────────────────────────────────
 function setupImportSection() {
-  // Auto-set currency when source changes
-  document.getElementById('import-source').onchange = () => {
-    if (document.getElementById('import-source').value === 'vested') {
-      document.getElementById('import-currency').value = 'USD';
-    }
+  // Auto-set currency based on source (not user-editable)
+  const SOURCE_CURRENCY = { groww_mf: 'INR', groww_stocks: 'INR', vested: 'USD' };
+  const syncCurrency = () => {
+    const src = document.getElementById('import-source').value;
+    document.getElementById('import-currency').value = SOURCE_CURRENCY[src] || 'INR';
   };
+  document.getElementById('import-source').onchange = syncCurrency;
+  syncCurrency();
 
   // Parse file
   document.getElementById('btn-parse-file').onclick = async () => {
@@ -1352,17 +1191,58 @@ function setupImportSection() {
     }
   };
 
-  // Back button
+  // Back button (step 1 → upload)
   document.getElementById('btn-import-back').onclick = () => {
     document.getElementById('import-review-card').style.display = 'none';
     document.getElementById('import-upload-card').style.display = '';
   };
+
+  // Step 2 back button (step 2 → step 1)
+  document.getElementById('btn-step2-back').onclick = () => showImportStep(1);
+}
+
+function showImportStep(n) {
+  document.getElementById('import-step-1').style.display = n === 1 ? '' : 'none';
+  document.getElementById('import-step-2').style.display = n === 2 ? '' : 'none';
+  const ind1 = document.getElementById('import-step-1-indicator');
+  const ind2 = document.getElementById('import-step-2-indicator');
+  if (n === 1) {
+    ind1.className = 'import-step active';
+    ind2.className = 'import-step';
+  } else {
+    ind1.className = 'import-step done';
+    ind2.className = 'import-step active';
+  }
+}
+
+function updateFundCardBadge(card) {
+  const badge = card.querySelector('.fund-card-badge');
+  const catVal = card.querySelector('.resolve-category').value;
+  const secVal = card.querySelector('.resolve-sector').value;
+  const configured = catVal || secVal;
+  if (configured) {
+    badge.textContent = 'Configured';
+    badge.className = 'fund-card-badge configured';
+    card.classList.add('configured');
+  } else {
+    badge.textContent = 'Pending';
+    badge.className = 'fund-card-badge';
+    card.classList.remove('configured');
+  }
+  updateFundsProgressPill();
+}
+
+function updateFundsProgressPill() {
+  const cards = [...document.querySelectorAll('.import-fund-card')];
+  if (!cards.length) return;
+  const done = cards.filter(c => c.classList.contains('configured')).length;
+  const pill = document.getElementById('import-funds-progress');
+  if (pill) pill.textContent = `${done} / ${cards.length} configured`;
 }
 
 function renderImportReview(result, currency) {
   const total = result.transactions.length;
   const dupes = result.transactions.filter(t => t.status === 'duplicate').length;
-  const newCount = total - dupes;
   const newFunds = result.unresolved_funds.length;
 
   // Summary banner
@@ -1370,53 +1250,6 @@ function renderImportReview(result, currency) {
     `<strong>${total}</strong> transactions found &nbsp;·&nbsp; ` +
     `<strong>${dupes}</strong> duplicates &nbsp;·&nbsp; ` +
     `<strong>${newFunds}</strong> new fund${newFunds !== 1 ? 's' : ''}`;
-
-  // Unresolved fund panels
-  const unresolvedEl = document.getElementById('import-unresolved');
-  unresolvedEl.innerHTML = '';
-  for (const fundName of result.unresolved_funds) {
-    const panel = document.createElement('div');
-    panel.className = 'import-unresolved-panel';
-    panel.dataset.fund = fundName;
-    const catOptions = state.categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
-    const secOptions = state.sectors.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-    panel.innerHTML = `
-      <div class="fund-name">⚠ Unresolved: <strong>${fundName}</strong></div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label>Short name <span style="opacity:.5">(optional)</span></label>
-          <input type="text" class="resolve-display-name" placeholder="Abbreviated name">
-        </div>
-        <div class="form-group">
-          <label>Category <span style="color:var(--red)">*</span></label>
-          <div class="select-add-wrap">
-            <select class="resolve-category">${catOptions}</select>
-            <button type="button" class="btn-add-opt" title="Add new category">+</button>
-          </div>
-          <div class="add-opt-inline">
-            <input type="text" class="add-opt-input" placeholder="New category name">
-            <span class="add-opt-error"></span>
-            <button type="button" class="add-opt-submit" disabled>Add</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Sector <span style="color:var(--red)">*</span></label>
-          <div class="select-add-wrap">
-            <select class="resolve-sector">${secOptions}</select>
-            <button type="button" class="btn-add-opt" title="Add new sector">+</button>
-          </div>
-          <div class="add-opt-inline">
-            <input type="text" class="add-opt-input" placeholder="New sector name">
-            <span class="add-opt-error"></span>
-            <button type="button" class="add-opt-submit" disabled>Add</button>
-          </div>
-        </div>
-      </div>`;
-    panel.querySelectorAll('input, select').forEach(el => el.addEventListener('input', updateImportConfirmBtn));
-    unresolvedEl.appendChild(panel);
-    attachSelectAdd(panel.querySelector('.resolve-category'), 'category');
-    attachSelectAdd(panel.querySelector('.resolve-sector'), 'sector');
-  }
 
   // Transaction table
   const tbody = document.getElementById('import-txn-tbody');
@@ -1439,75 +1272,139 @@ function renderImportReview(result, currency) {
   });
 
   tbody.querySelectorAll('input[type=checkbox]').forEach(cb =>
-    cb.addEventListener('change', updateImportConfirmBtn)
+    cb.addEventListener('change', updateStep1NextBtn)
   );
 
-  // Show review, hide upload
-  document.getElementById('import-upload-card').style.display = 'none';
-  document.getElementById('import-review-card').style.display = '';
-  updateImportConfirmBtn();
+  // Unresolved fund cards (horizontal scroll)
+  const unresolvedEl = document.getElementById('import-unresolved');
+  unresolvedEl.innerHTML = '';
+  for (const fundName of result.unresolved_funds) {
+    const card = document.createElement('div');
+    card.className = 'import-fund-card';
+    card.dataset.fund = fundName;
+    const catOptions = `<option value="">— none —</option>` +
+      state.categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    const secOptions = `<option value="">— none —</option>` +
+      state.sectors.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+    card.innerHTML = `
+      <div class="fund-card-name">${fundName}</div>
+      <span class="fund-card-badge">Pending</span>
+      <div class="fund-card-field">
+        <div class="fund-card-label">Short name <span class="fund-card-label-opt">(optional)</span></div>
+        <input type="text" class="resolve-display-name" placeholder="Abbreviated name">
+      </div>
+      <div class="fund-card-field">
+        <div class="fund-card-label">Category <span class="fund-card-label-opt">(optional)</span></div>
+        <div class="select-add-wrap">
+          <select class="resolve-category">${catOptions}</select>
+          <button type="button" class="btn-add-opt" title="Add new category">+</button>
+        </div>
+        <div class="add-opt-inline">
+          <input type="text" class="add-opt-input" placeholder="New category name">
+          <span class="add-opt-error"></span>
+          <button type="button" class="add-opt-submit" disabled>Add</button>
+        </div>
+        <div class="fund-card-hint">Used for allocation breakdown charts</div>
+      </div>
+      <div class="fund-card-field">
+        <div class="fund-card-label">Sector <span class="fund-card-label-opt">(optional)</span></div>
+        <div class="select-add-wrap">
+          <select class="resolve-sector">${secOptions}</select>
+          <button type="button" class="btn-add-opt" title="Add new sector">+</button>
+        </div>
+        <div class="add-opt-inline">
+          <input type="text" class="add-opt-input" placeholder="New sector name">
+          <span class="add-opt-error"></span>
+          <button type="button" class="add-opt-submit" disabled>Add</button>
+        </div>
+        <div class="fund-card-hint">Used for sector-level filtering and analysis</div>
+      </div>`;
+    card.querySelectorAll('.resolve-category, .resolve-sector').forEach(el =>
+      el.addEventListener('change', () => updateFundCardBadge(card))
+    );
+    unresolvedEl.appendChild(card);
+    attachSelectAdd(card.querySelector('.resolve-category'), 'category');
+    attachSelectAdd(card.querySelector('.resolve-sector'), 'sector');
+  }
+  updateFundsProgressPill();
 
-  // Confirm handler (set fresh each render)
-  const confirmBtn = document.getElementById('btn-import-confirm');
-  confirmBtn.onclick = async () => {
-    const checkedBoxes = [...tbody.querySelectorAll('input[type=checkbox]:checked')];
-    const checkedTxns = checkedBoxes.map(cb => {
-      const t = result.transactions[parseInt(cb.dataset.idx)];
-      return { fund_name: t.name, date: t.date, type: t.type, units: t.units, price: t.price, amount: t.amount };
-    });
-
-    const newTickers = [...unresolvedEl.querySelectorAll('.import-unresolved-panel')].map(panel => ({
-      name: panel.dataset.fund,
-      short_name: panel.querySelector('.resolve-display-name').value.trim() || null,
-      category_id: parseInt(panel.querySelector('.resolve-category').value),
-      sector_id: parseInt(panel.querySelector('.resolve-sector').value),
-    }));
-
-    confirmBtn.disabled = true;
-    confirmBtn.textContent = 'Importing…';
-    try {
-      const res = await api('POST', '/import/confirm', {
-        currency,
-        new_tickers: newTickers,
-        transactions: checkedTxns,
-      });
-      showToast(`${res.imported} imported · ${res.skipped} skipped`);
-      // Refresh data and reset to upload view
-      const [txns] = await Promise.all([api('GET', '/transactions'), fetchPositions()]);
-      state.transactions = txns;
-      if (activeView === 'transactions') renderTransactions();
-      state.tickers = await api('GET', '/tickers');
-      importParseResult = null;
-      document.getElementById('import-review-card').style.display = 'none';
-      document.getElementById('import-upload-card').style.display = '';
-      document.getElementById('import-file').value = '';
-    } catch (err) {
-      showToast('Import error: ' + err.message, 'error');
-    } finally {
-      confirmBtn.disabled = false;
-      confirmBtn.textContent = updateImportConfirmBtn() || 'Import transactions';
+  // Step 1 Next button wiring
+  const nextBtn = document.getElementById('btn-step1-next');
+  nextBtn.onclick = () => {
+    if (newFunds > 0) {
+      showImportStep(2);
+    } else {
+      doImportConfirm(result, currency);
     }
   };
+  nextBtn.textContent = newFunds > 0 ? 'Next: Assign funds →' : 'Import transactions';
+
+  // Confirm handler
+  document.getElementById('btn-import-confirm').onclick = () => doImportConfirm(result, currency);
+
+  // Show review, hide upload, start at step 1
+  document.getElementById('import-upload-card').style.display = 'none';
+  document.getElementById('import-review-card').style.display = '';
+  showImportStep(1);
+  updateStep1NextBtn();
+  // Hide step 2 indicator if no new funds
+  document.getElementById('import-step-2-indicator').style.display = newFunds > 0 ? '' : 'none';
+  document.querySelector('.import-step-connector').style.display = newFunds > 0 ? '' : 'none';
+}
+
+async function doImportConfirm(result, currency) {
+  const tbody = document.getElementById('import-txn-tbody');
+  const unresolvedEl = document.getElementById('import-unresolved');
+  const confirmBtn = document.getElementById('btn-import-confirm');
+
+  const checkedBoxes = [...tbody.querySelectorAll('input[type=checkbox]:checked')];
+  const checkedTxns = checkedBoxes.map(cb => {
+    const t = result.transactions[parseInt(cb.dataset.idx)];
+    return { fund_name: t.name, date: t.date, type: t.type, units: t.units, price: t.price, amount: t.amount };
+  });
+
+  const newTickers = [...unresolvedEl.querySelectorAll('.import-fund-card')].map(card => ({
+    name: card.dataset.fund,
+    short_name: card.querySelector('.resolve-display-name').value.trim() || null,
+    category_id: parseInt(card.querySelector('.resolve-category').value) || null,
+    sector_id: parseInt(card.querySelector('.resolve-sector').value) || null,
+  }));
+
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Importing…';
+  try {
+    const res = await api('POST', '/import/confirm', {
+      currency,
+      new_tickers: newTickers,
+      transactions: checkedTxns,
+    });
+    showToast(`${res.imported} imported · ${res.skipped} skipped`);
+    const [txns] = await Promise.all([api('GET', '/transactions'), fetchPositions()]);
+    state.transactions = txns;
+    state.tickers = await api('GET', '/tickers');
+    renderAll();
+    importParseResult = null;
+    document.getElementById('import-review-card').style.display = 'none';
+    document.getElementById('import-upload-card').style.display = '';
+    document.getElementById('import-file').value = '';
+  } catch (err) {
+    showToast('Import error: ' + err.message, 'error');
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = 'Import transactions';
+  }
+}
+
+function updateStep1NextBtn() {
+  const tbody = document.getElementById('import-txn-tbody');
+  const nextBtn = document.getElementById('btn-step1-next');
+  if (!tbody || !nextBtn) return;
+  const checkedCount = tbody.querySelectorAll('input[type=checkbox]:checked').length;
+  nextBtn.disabled = checkedCount === 0;
 }
 
 function updateImportConfirmBtn() {
-  const tbody = document.getElementById('import-txn-tbody');
-  const unresolvedEl = document.getElementById('import-unresolved');
-  if (!tbody) return;
-
-  const checkedCount = tbody.querySelectorAll('input[type=checkbox]:checked').length;
-
-  // Check all unresolved panels have a category selected
-  const panels = [...unresolvedEl.querySelectorAll('.import-unresolved-panel')];
-  const allResolved = panels.every(panel =>
-    panel.querySelector('.resolve-category').value
-  );
-
-  const btn = document.getElementById('btn-import-confirm');
-  if (!btn) return;
-  btn.disabled = checkedCount === 0 || !allResolved;
-  btn.textContent = `Import ${checkedCount} transaction${checkedCount !== 1 ? 's' : ''}`;
-  return btn.textContent;
+  // No-op: confirm button is always enabled (category/sector are optional)
+  // Kept for compatibility with attachSelectAdd callbacks
 }
 
 // ── Live Prices Tab ───────────────────────────────────────────────────────────
@@ -1519,9 +1416,11 @@ function setupLivePricesTab() {
       document.querySelectorAll('.lp-subtab').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       const tab = btn.dataset.lpTab;
-      document.getElementById('lp-pane-us-equity').style.display  = tab === 'us-equity'  ? '' : 'none';
-      document.getElementById('lp-pane-indian-mf').style.display  = tab === 'indian-mf'  ? '' : 'none';
-      if (tab === 'indian-mf') renderMfTable();
+      document.getElementById('lp-pane-us-equity').style.display   = tab === 'us-equity'  ? '' : 'none';
+      document.getElementById('lp-pane-indian-mf').style.display   = tab === 'indian-mf'  ? '' : 'none';
+      document.getElementById('lp-pane-csv-upload').style.display  = tab === 'csv-upload' ? '' : 'none';
+      if (tab === 'indian-mf')  renderMfTable();
+      if (tab === 'csv-upload') renderCsvUploadTable();
     });
   });
 
@@ -1787,6 +1686,125 @@ async function fetchSelectedMfPrices() {
   }
 }
 
+// ── CSV Upload tab ────────────────────────────────────────────────────────────
+
+async function renderCsvUploadTable() {
+  const tbody = document.getElementById('lp-upload-tbody');
+  tbody.innerHTML = '';
+
+  if (!state.tickers.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:16px;opacity:.6">No holdings found.</td></tr>';
+    return;
+  }
+
+  // Load latest price coverage for all tickers that have a symbol
+  const symbolTickers = state.tickers.filter(t => t.symbol);
+  const coverageMap = {};   // ticker_id → latest_date string
+  if (symbolTickers.length) {
+    try {
+      const latest = await api('GET', `/price-history/latest?ticker_ids=${symbolTickers.map(t => t.id).join(',')}`);
+      for (const r of latest.results) {
+        if (r.latest_date) coverageMap[r.ticker_id] = r.latest_date;
+      }
+    } catch (_) {}
+  }
+
+  // Sort: tickers with no coverage first, then alphabetically
+  const sorted = [...state.tickers].sort((a, b) => {
+    const aCov = !!coverageMap[a.id];
+    const bCov = !!coverageMap[b.id];
+    if (aCov !== bCov) return aCov ? 1 : -1;
+    return displayName(a).localeCompare(displayName(b));
+  });
+
+  for (const ticker of sorted) {
+    const coverage = coverageMap[ticker.id] ? `up to ${coverageMap[ticker.id].slice(0, 7)}` : '—';
+    const tr = document.createElement('tr');
+    tr.dataset.tickerId = ticker.id;
+    tr.innerHTML = `
+      <td>${displayName(ticker)}</td>
+      <td><input type="text" class="lp-symbol-input lp-upload-symbol" data-id="${ticker.id}"
+            value="${ticker.symbol || ''}" placeholder="e.g. AAPL" style="width:90px;text-transform:uppercase"></td>
+      <td class="lp-upload-coverage" id="lp-upcov-${ticker.id}">${coverage}</td>
+      <td>
+        <input type="file" accept=".csv" class="lp-upload-file-input" id="lp-file-${ticker.id}" style="display:none">
+        <button class="btn-secondary lp-upload-btn" data-id="${ticker.id}" ${ticker.symbol ? '' : 'disabled'}>Upload CSV</button>
+      </td>
+      <td class="lp-upload-status" id="lp-upstatus-${ticker.id}"></td>
+    `;
+    tbody.appendChild(tr);
+
+    // Symbol save (same pattern as other tabs)
+    const symbolInput = tr.querySelector('.lp-upload-symbol');
+    const uploadBtn   = tr.querySelector('.lp-upload-btn');
+    const saveSymbol = async () => {
+      const val = symbolInput.value.trim().toUpperCase();
+      if (val === (ticker.symbol || '').toUpperCase()) return;
+      try {
+        await api('PUT', `/tickers/${ticker.id}/symbol`, { symbol: val });
+        const t = state.tickers.find(t => t.id === ticker.id);
+        if (t) t.symbol = val;
+        symbolInput.style.outline = '2px solid #22c55e';
+        setTimeout(() => { symbolInput.style.outline = ''; }, 1200);
+        uploadBtn.disabled = !val;
+        mvRawData = null;
+      } catch (err) {
+        showToast('Error saving symbol: ' + err.message, 'error');
+      }
+    };
+    symbolInput.addEventListener('blur', saveSymbol);
+    symbolInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveSymbol(); } });
+
+    // Upload button → trigger hidden file input
+    const fileInput = tr.querySelector('.lp-upload-file-input');
+    uploadBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      fileInput.value = '';   // reset so same file can be re-uploaded
+      await handleCsvUpload(ticker.id, file, tr);
+    });
+  }
+}
+
+async function handleCsvUpload(tickerId, file, tr) {
+  const statusEl   = document.getElementById(`lp-upstatus-${tickerId}`);
+  const coverageEl = document.getElementById(`lp-upcov-${tickerId}`);
+  const btn        = tr.querySelector('.lp-upload-btn');
+
+  statusEl.textContent = 'Uploading…';
+  statusEl.className   = 'lp-upload-status';
+  btn.disabled = true;
+
+  try {
+    const form = new FormData();
+    form.append('ticker_id', tickerId);
+    form.append('file', file);
+
+    const result = await apiUpload('/price-history/upload', form);
+
+    if (result.status === 'no_symbol') {
+      statusEl.textContent = 'Set a symbol first';
+      statusEl.className   = 'lp-upload-status error';
+    } else if (result.status === 'parse_error' || result.status === 'no_data') {
+      statusEl.textContent = result.error_detail || 'Could not parse file';
+      statusEl.className   = 'lp-upload-status error';
+    } else {
+      const from = result.date_from ? result.date_from.slice(0, 7) : '?';
+      const to   = result.date_to   ? result.date_to.slice(0, 7)   : '?';
+      statusEl.textContent = `✓ ${result.rows_stored} rows (${from} – ${to})${result.rows_skipped ? `, ${result.rows_skipped} skipped` : ''}`;
+      statusEl.className   = 'lp-upload-status ok';
+      if (coverageEl) coverageEl.textContent = `up to ${to}`;
+      mvRawData = null;   // invalidate chart cache
+    }
+  } catch (err) {
+    statusEl.textContent = 'Upload failed: ' + err.message;
+    statusEl.className   = 'lp-upload-status error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function updateFetchBtn() {
   const anyChecked = [...document.querySelectorAll('.lp-row-check')].some(cb => cb.checked);
   document.getElementById('lp-fetch-btn').disabled = !anyChecked;
@@ -1881,12 +1899,6 @@ async function buildMarketValueChart() {
   updateMvDropdownLabels();
   renderMarketValueChart();
 
-  const nudge = document.getElementById('mv-nudge');
-  if (mvRawData.has_any_partial && !sessionStorage.getItem('mv_nudge_dismissed')) {
-    nudge.style.display = '';
-  } else {
-    nudge.style.display = 'none';
-  }
 }
 
 function initMvDropdowns() {
@@ -2118,30 +2130,6 @@ function renderMarketValueChart() {
   });
 }
 
-// ── Nudge wiring ──────────────────────────────────────────────────────────────
-function setupNudge() {
-  document.getElementById('mv-nudge-dismiss').addEventListener('click', () => {
-    sessionStorage.setItem('mv_nudge_dismissed', '1');
-    document.getElementById('mv-nudge').style.display = 'none';
-  });
-
-  document.getElementById('mv-nudge-link').addEventListener('click', (e) => {
-    e.preventDefault();
-    showView('add');
-    // Activate Live Prices tab
-    document.querySelectorAll('.add-tab').forEach(t => t.classList.remove('active'));
-    const lpTab = document.querySelector('.add-tab[data-tab="live-prices"]');
-    if (lpTab) {
-      lpTab.classList.add('active');
-      document.getElementById('add-ticker-form').style.display = 'none';
-      document.getElementById('add-txn-form').style.display = 'none';
-      document.getElementById('import-upload-card').style.display = 'none';
-      document.getElementById('import-divider').style.display = 'none';
-      document.getElementById('live-prices-panel').style.display = '';
-      renderLivePricesTable();
-    }
-  });
-}
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', bootAuth);

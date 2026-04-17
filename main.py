@@ -6,6 +6,7 @@ import jwt as pyjwt
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
@@ -71,6 +72,40 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ── Price history helpers ─────────────────────────────────────────────────────
+
+# Higher number = higher trust; a source only overwrites if its priority >= existing
+SOURCE_PRIORITY: dict[str, int] = {
+    "manual_upload": 3,
+    "alpha_vantage": 2,
+    "mfapi":         1,
+}
+
+def _should_overwrite(existing_source: Optional[str], new_source: str) -> bool:
+    return SOURCE_PRIORITY.get(new_source, 0) >= SOURCE_PRIORITY.get(existing_source or "", 0)
+
+def _first_of_month(date_str: str) -> str:
+    """Return YYYY-MM-01 for any YYYY-MM-DD string."""
+    return date_str[:7] + "-01"
+
+def _parse_date(s: str) -> Optional[str]:
+    """Parse a date string in several common formats → YYYY-MM-DD, or None.
+    Strips trailing time component (e.g. '1/3/2026 15:30:00') before matching."""
+    s = s.strip()
+    # Drop time portion if present (e.g. Google Sheets datetime exports)
+    if " " in s and ":" in s.split()[-1]:
+        s = s.split()[0]
+    for fmt in (
+        "%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
+        "%b %d, %Y", "%B %d, %Y", "%d-%b-%Y", "%d %b %Y",
+    ):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
 def get_short_name(ticker_obj) -> str:
     """Return short_name if set, otherwise fall back to name."""
     return ticker_obj.short_name or ticker_obj.name
@@ -93,15 +128,36 @@ def get_positions(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    # Determine effective FX rate
+    # Determine effective FX rate from latest fx_history entry
     if fx_rate is None:
-        cfg = db.query(models.Config).filter_by(user_id=user_id, key="fx_rate_usd_inr").first()
-        fx_rate = float(cfg.value) if cfg else 86.0
+        latest = db.query(models.FxHistory).order_by(models.FxHistory.from_ym.desc()).first()
+        fx_rate = latest.rate if latest else 86.0
 
     transactions = db.query(models.Transaction).filter_by(user_id=user_id).all()
     tickers_map = {t.id: t for t in db.query(models.Ticker).filter_by(user_id=user_id).all()}
-    prices_map = {p.ticker_id: p.price for p in db.query(models.Price).filter_by(user_id=user_id).all()}
     fx_rows = db.query(models.FxHistory).all()
+
+    # Build prices_map from price_history: ticker_id → latest close
+    symbol_to_ticker_id = {t.symbol: t.id for t in tickers_map.values() if t.symbol}
+    if symbol_to_ticker_id:
+        subq = (
+            db.query(
+                models.PriceHistory.symbol,
+                func.max(models.PriceHistory.date).label('max_date')
+            )
+            .filter(models.PriceHistory.symbol.in_(list(symbol_to_ticker_id.keys())))
+            .group_by(models.PriceHistory.symbol)
+            .subquery()
+        )
+        rows = (
+            db.query(models.PriceHistory.symbol, models.PriceHistory.close)
+            .join(subq, (models.PriceHistory.symbol == subq.c.symbol) &
+                        (models.PriceHistory.date == subq.c.max_date))
+            .all()
+        )
+        prices_map = {symbol_to_ticker_id[r.symbol]: r.close for r in rows if r.symbol in symbol_to_ticker_id}
+    else:
+        prices_map = {}
     categories_map = {c.id: c for c in db.query(models.Category).filter_by(user_id=user_id).all()}
     sectors_map = {s.id: s for s in db.query(models.Sector).filter_by(user_id=user_id).all()}
 
@@ -534,44 +590,6 @@ def delete_transaction(
     db.commit()
 
 
-# ── Prices ────────────────────────────────────────────────────────────────────
-
-@app.get("/api/v1/prices")
-def get_prices(
-    db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user),
-):
-    prices = db.query(models.Price).filter_by(user_id=user_id).all()
-    return {str(p.ticker_id): p.price for p in prices}
-
-
-@app.put("/api/v1/prices/{ticker_id}")
-def update_price(
-    ticker_id: int,
-    payload: schemas.PriceUpdate,
-    db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user),
-):
-    p = db.query(models.Price).filter_by(user_id=user_id, ticker_id=ticker_id).first()
-    if p:
-        p.price = payload.price
-        p.updated_at = now_iso()
-    else:
-        p = models.Price(user_id=user_id, ticker_id=ticker_id, price=payload.price, updated_at=now_iso())
-        db.add(p)
-    db.commit()
-    return {"ticker_id": ticker_id, "price": payload.price, "updated_at": p.updated_at}
-
-
-@app.get("/api/v1/prices/detail")
-def get_prices_detail(
-    db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user),
-):
-    prices = db.query(models.Price).filter_by(user_id=user_id).all()
-    return [{"ticker_id": p.ticker_id, "price": p.price, "updated_at": p.updated_at} for p in prices]
-
-
 # ── Categories ────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/categories")
@@ -588,29 +606,14 @@ def create_category(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    # #region agent log
-    import json, time as _time
-    _log_path = "/Users/param/claudecode-portfoliotracker-v2/.cursor/debug.log"
-    def _dbg(msg, data, hyp="?"):
-        entry = json.dumps({"timestamp": int(_time.time()*1000), "hypothesisId": hyp, "location": "main.py:create_category", "message": msg, "data": data})
-        open(_log_path, "a").write(entry + "\n")
-    _dbg("create_category called", {"user_id": str(user_id), "name": payload.name, "color": payload.color}, "A/C/D")
-    # #endregion
     try:
         c = models.Category(user_id=user_id, name=payload.name, color=payload.color)
         db.add(c)
         db.commit()
         db.refresh(c)
-        # #region agent log
-        _dbg("create_category success", {"id": c.id, "name": c.name}, "A/C/D")
-        # #endregion
         return c
     except Exception as _e:
         db.rollback()
-        # #region agent log
-        import traceback as _tb
-        _dbg("create_category EXCEPTION", {"type": type(_e).__name__, "msg": str(_e), "traceback": _tb.format_exc()}, "A/B/C/D")
-        # #endregion
         raise
 
 
@@ -926,13 +929,14 @@ def fetch_price_history(
             ))
             continue
 
-        # 5. Parse and upsert monthly rows
+        # 5. Parse and upsert monthly rows (dates normalised to YYYY-MM-01)
         monthly = data.get("Monthly Time Series", {})
         rows_stored = 0
         latest_close = None
         latest_date = None
 
-        for date_str, values in monthly.items():
+        for raw_date, values in monthly.items():
+            date_str = _first_of_month(raw_date)
             close = float(values["4. close"])
             high  = float(values["2. high"])
             low   = float(values["3. low"])
@@ -942,18 +946,19 @@ def fetch_price_history(
                 symbol=symbol, granularity="monthly", date=date_str
             ).first()
             if existing:
-                existing.close = close
-                existing.high = high
-                existing.low = low
-                existing.open = open_
-                existing.fetched_at = now_iso()
+                if _should_overwrite(existing.source, "alpha_vantage"):
+                    existing.close = close
+                    existing.high = high
+                    existing.low = low
+                    existing.open = open_
+                    existing.source = "alpha_vantage"
+                    existing.fetched_at = now_iso()
             else:
-                row = models.PriceHistory(
+                db.add(models.PriceHistory(
                     symbol=symbol, granularity="monthly", date=date_str,
                     close=close, high=high, low=low, open=open_,
                     source="alpha_vantage", fetched_at=now_iso()
-                )
-                db.add(row)
+                ))
 
             rows_stored += 1
             if latest_date is None or date_str > latest_date:
@@ -1039,14 +1044,15 @@ def fetch_mf_price_history(
                 symbol=scheme_code, granularity="daily", date=date_str
             ).first()
             if existing:
-                existing.close     = nav
-                existing.fetched_at = now_iso()
+                if _should_overwrite(existing.source, "mfapi"):
+                    existing.close      = nav
+                    existing.source     = "mfapi"
+                    existing.fetched_at = now_iso()
             else:
-                row = models.PriceHistory(
+                db.add(models.PriceHistory(
                     symbol=scheme_code, granularity="daily", date=date_str,
                     close=nav, source="mfapi", fetched_at=now_iso()
-                )
-                db.add(row)
+                ))
 
             rows_stored += 1
             if latest_date is None or date_str > latest_date:
@@ -1060,6 +1066,147 @@ def fetch_mf_price_history(
         ))
 
     return schemas.PriceHistoryFetchResponse(results=results)
+
+
+# ── Live Prices: upload CSV price history ────────────────────────────────────
+
+@app.post("/api/v1/price-history/upload", response_model=schemas.PriceHistoryUploadResult)
+async def upload_price_history(
+    ticker_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    import csv, io as _io
+
+    # 1. Verify ownership and resolve symbol
+    ticker = db.query(models.Ticker).filter_by(id=ticker_id, user_id=user_id).first()
+    if not ticker:
+        raise HTTPException(status_code=404, detail="Ticker not found")
+    if not ticker.symbol:
+        return schemas.PriceHistoryUploadResult(
+            ticker_id=ticker_id, symbol="", status="no_symbol",
+            rows_stored=0, rows_skipped=0,
+        )
+
+    symbol = ticker.symbol.upper()
+
+    # 2. Read file content
+    try:
+        raw = await file.read()
+        text = raw.decode("utf-8-sig")   # strip BOM if present (Excel/Sheets export)
+    except Exception as e:
+        return schemas.PriceHistoryUploadResult(
+            ticker_id=ticker_id, symbol=symbol, status="parse_error",
+            rows_stored=0, rows_skipped=0, error_detail=f"Could not read file: {e}",
+        )
+
+    # 3. Parse CSV — expect a 'date' column and a 'close' (or 'adj close') column.
+    #    Google Sheets GOOGLEFINANCE exports use the ticker symbol as the price column
+    #    header (e.g. "Date,AAPL"), so we fall back to the second column if 'close' is absent.
+    try:
+        reader = csv.DictReader(_io.StringIO(text))
+        raw_rows = list(reader)
+    except Exception as e:
+        return schemas.PriceHistoryUploadResult(
+            ticker_id=ticker_id, symbol=symbol, status="parse_error",
+            rows_stored=0, rows_skipped=0, error_detail=f"CSV parse error: {e}",
+        )
+
+    fieldnames_lower = [f.lower().strip() for f in (reader.fieldnames or [])]
+    if "close" in fieldnames_lower:
+        close_col = "close"
+    elif "adj close" in fieldnames_lower:
+        close_col = "adj close"
+    elif len(fieldnames_lower) >= 2:
+        # Google Sheets GOOGLEFINANCE format: second column is the ticker symbol
+        close_col = fieldnames_lower[1]
+    else:
+        return schemas.PriceHistoryUploadResult(
+            ticker_id=ticker_id, symbol=symbol, status="no_data",
+            rows_stored=0, rows_skipped=0,
+            error_detail="Could not detect a price column. CSV needs 'date' and 'close' headers.",
+        )
+
+    # 4. Parse all valid rows first so we can validate frequency before writing
+    parsed: list[tuple[str, float]] = []   # (date_str, close)
+    for raw_row in raw_rows:
+        row = {k.lower().strip(): v.strip() for k, v in raw_row.items() if k}
+        raw_date  = row.get("date", "")
+        raw_close = row.get(close_col, "")
+        if not raw_date or not raw_close:
+            continue
+        date_str = _parse_date(raw_date)
+        if not date_str:
+            continue
+        try:
+            close = float(raw_close.replace(",", ""))
+        except ValueError:
+            continue
+        if close <= 0:
+            continue
+        parsed.append((date_str, close))
+
+    # 5. Reject daily data — require weekly frequency (avg gap >= 4 days)
+    if len(parsed) >= 2:
+        sorted_dates = sorted(d for d, _ in parsed)
+        d0 = datetime.strptime(sorted_dates[0],  "%Y-%m-%d")
+        d1 = datetime.strptime(sorted_dates[-1], "%Y-%m-%d")
+        avg_gap = (d1 - d0).days / (len(sorted_dates) - 1)
+        if avg_gap < 4:
+            return schemas.PriceHistoryUploadResult(
+                ticker_id=ticker_id, symbol=symbol, status="no_data",
+                rows_stored=0, rows_skipped=0,
+                error_detail=(
+                    f"Data looks daily (avg {avg_gap:.1f} days between rows). "
+                    "Please upload weekly data — use GOOGLEFINANCE with interval \"WEEKLY\"."
+                ),
+            )
+
+    rows_stored = 0
+    rows_skipped = 0
+    date_from: Optional[str] = None
+    date_to:   Optional[str] = None
+
+    for date_str, close in parsed:
+        # 6. Priority-aware upsert (weekly granularity)
+        existing = db.query(models.PriceHistory).filter_by(
+            symbol=symbol, granularity="weekly", date=date_str
+        ).first()
+
+        if existing:
+            if _should_overwrite(existing.source, "manual_upload"):
+                existing.close      = close
+                existing.source     = "manual_upload"
+                existing.fetched_at = now_iso()
+                rows_stored += 1
+            else:
+                rows_skipped += 1
+        else:
+            db.add(models.PriceHistory(
+                symbol=symbol, granularity="weekly", date=date_str,
+                close=close, source="manual_upload", fetched_at=now_iso(),
+            ))
+            rows_stored += 1
+
+        if date_from is None or date_str < date_from:
+            date_from = date_str
+        if date_to is None or date_str > date_to:
+            date_to = date_str
+
+    if rows_stored == 0 and rows_skipped == 0:
+        return schemas.PriceHistoryUploadResult(
+            ticker_id=ticker_id, symbol=symbol, status="no_data",
+            rows_stored=0, rows_skipped=0,
+            error_detail="No valid rows found — check that the file has 'date' and 'close' columns.",
+        )
+
+    db.commit()
+    return schemas.PriceHistoryUploadResult(
+        ticker_id=ticker_id, symbol=symbol, status="success",
+        rows_stored=rows_stored, rows_skipped=rows_skipped,
+        date_from=date_from, date_to=date_to,
+    )
 
 
 # ── Insights: Market Value History ───────────────────────────────────────────
@@ -1105,17 +1252,22 @@ def market_value_history(
         return True
 
     # Build price lookup: {symbol: {ym: close}}  (ym = 'YYYY-MM')
-    # Ordered ASC so the latest date in each month wins (handles both monthly AV
-    # records and daily mfapi records stored with granularity="daily").
+    # Priority rule: higher SOURCE_PRIORITY wins; ties broken by latest date (ASC order).
     all_symbols = list({t.symbol for t in tickers_map.values() if t.symbol})
     price_lookup: dict[str, dict[str, float]] = {}
+    _lookup_prio: dict[str, dict[str, int]] = {}   # tracks winning priority per (symbol, ym)
     if all_symbols:
         for ph in db.query(models.PriceHistory).filter(
             models.PriceHistory.symbol.in_(all_symbols),
-            models.PriceHistory.granularity.in_(["monthly", "daily"]),
+            models.PriceHistory.granularity.in_(["monthly", "daily", "weekly"]),
         ).order_by(models.PriceHistory.date.asc()).all():
             ym = ph.date[:7]
-            price_lookup.setdefault(ph.symbol, {})[ym] = ph.close
+            ph_prio = SOURCE_PRIORITY.get(ph.source or "", 0)
+            sym_prio = _lookup_prio.setdefault(ph.symbol, {})
+            # Overwrite if higher priority, or same priority with a later date
+            if ym not in sym_prio or ph_prio >= sym_prio[ym]:
+                price_lookup.setdefault(ph.symbol, {})[ym] = ph.close
+                sym_prio[ym] = ph_prio
 
     # Build monthly timeline from first transaction → today
     first_date = date_type.fromisoformat(transactions[0].date)

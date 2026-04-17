@@ -131,8 +131,8 @@ class ConfigOut(BaseModel):
 class NewTickerAssignment(BaseModel):
     name: str                           # fund name from file (becomes ticker.name)
     short_name: Optional[str] = None
-    category_id: int
-    sector_id: int
+    category_id: Optional[int] = None
+    sector_id: Optional[int] = None
 
 
 class ImportTransaction(BaseModel):
@@ -227,6 +227,17 @@ class PriceHistoryLatestResult(BaseModel):
 
 class PriceHistoryLatestResponse(BaseModel):
     results: List[PriceHistoryLatestResult]
+
+
+class PriceHistoryUploadResult(BaseModel):
+    ticker_id: int
+    symbol: str
+    status: str          # 'success' | 'no_symbol' | 'no_data' | 'parse_error' | 'error'
+    rows_stored: int
+    rows_skipped: int    # rows that lost priority check against existing source
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    error_detail: Optional[str] = None
 
 
 # ── Market Value History Chart ────────────────────────────────────────────────

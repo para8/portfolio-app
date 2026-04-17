@@ -12,40 +12,74 @@
 
 <!-- ══ AUTH SCREEN ══ -->
 <div id="auth-screen">
-  <div class="auth-card">
-    <div class="auth-logo">portfolio/v4</div>
-    <div class="auth-tabs">
-      <button class="auth-tab active" data-auth-tab="login">Sign in</button>
-      <button class="auth-tab" data-auth-tab="signup">Create account</button>
+  <div class="auth-layout">
+
+    <!-- Left panel: brand / value prop -->
+    <div class="auth-panel-left">
+      <div class="auth-brand">
+        <span class="auth-brand-name">Portfolio</span><span class="auth-brand-accent">Tracker</span>
+      </div>
+      <div class="auth-hero">
+        <p class="auth-hero-headline">All your investments.<br>One simple view.</p>
+        <p class="auth-hero-sub">Track multi-currency holdings, live prices, allocations and P&amp;L across every broker.</p>
+      </div>
+      <ul class="auth-trust-list">
+        <li>
+          <span class="auth-trust-icon">✦</span>
+          <span>Live market prices, always up to date</span>
+        </li>
+        <li>
+          <span class="auth-trust-icon">✦</span>
+          <span>Works with INR &amp; USD portfolios</span>
+        </li>
+        <li>
+          <span class="auth-trust-icon">✦</span>
+          <span>Free — no credit card required</span>
+        </li>
+      </ul>
     </div>
 
-    <!-- Login form -->
-    <div class="auth-form" id="auth-form-login">
-      <div class="auth-field">
-        <label>Email</label>
-        <input type="email" id="login-email" placeholder="you@example.com" autocomplete="email">
+    <!-- Right panel: form -->
+    <div class="auth-panel-right">
+      <div class="auth-card">
+        <div class="auth-card-header">
+          <div class="auth-tabs">
+            <button class="auth-tab active" data-auth-tab="login">Sign in</button>
+            <button class="auth-tab" data-auth-tab="signup">Create account</button>
+          </div>
+        </div>
+
+        <!-- Login form -->
+        <div class="auth-form" id="auth-form-login">
+          <div class="auth-field">
+            <label>Email</label>
+            <input type="email" id="login-email" placeholder="you@example.com" autocomplete="email">
+          </div>
+          <div class="auth-field">
+            <label>Password</label>
+            <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
+          </div>
+          <button class="auth-submit" id="btn-login">Sign in</button>
+          <div class="auth-msg" id="login-msg"></div>
+        </div>
+
+        <!-- Signup form -->
+        <div class="auth-form" id="auth-form-signup" style="display:none">
+          <div class="auth-field">
+            <label>Email</label>
+            <input type="email" id="signup-email" placeholder="you@example.com" autocomplete="email">
+          </div>
+          <div class="auth-field">
+            <label>Password</label>
+            <input type="password" id="signup-password" placeholder="min 6 characters" autocomplete="new-password">
+          </div>
+          <button class="auth-submit" id="btn-signup">Create account</button>
+          <div class="auth-msg" id="signup-msg"></div>
+        </div>
+
       </div>
-      <div class="auth-field">
-        <label>Password</label>
-        <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
-      </div>
-      <button class="auth-submit" id="btn-login">Sign in</button>
-      <div class="auth-msg" id="login-msg"></div>
     </div>
 
-    <!-- Signup form -->
-    <div class="auth-form" id="auth-form-signup" style="display:none">
-      <div class="auth-field">
-        <label>Email</label>
-        <input type="email" id="signup-email" placeholder="you@example.com" autocomplete="email">
-      </div>
-      <div class="auth-field">
-        <label>Password</label>
-        <input type="password" id="signup-password" placeholder="min 6 characters" autocomplete="new-password">
-      </div>
-      <button class="auth-submit" id="btn-signup">Create account</button>
-      <div class="auth-msg" id="signup-msg"></div>
-    </div>
   </div>
 </div>
 
@@ -67,23 +101,16 @@
     <div class="nav-item" data-view="transactions">
       <span class="nav-icon">⟳</span> Transactions
     </div>
-    <div class="nav-item" data-view="prices">
-      <span class="nav-icon">⊙</span> Prices
-    </div>
     <div class="nav-section">Actions</div>
     <div class="nav-item" data-view="add">
-      <span class="nav-icon">+</span> Add
+      <span class="nav-icon">+</span> Transactions
+    </div>
+    <div class="nav-item" data-view="prices">
+      <span class="nav-icon">$</span> Prices
     </div>
   </nav>
 
-  <div class="fx-box">
-    <div class="fx-label">USD → INR</div>
-    <div class="fx-row">
-      <span class="fx-prefix">1 USD =</span>
-      <input class="fx-input" type="number" id="fx-rate" value="86" step="0.5" min="1">
-    </div>
-    <div class="fx-note" id="fx-note">cost basis uses historical rates</div>
-  </div>
+
 
   <button class="logout-btn" id="btn-logout">Sign out</button>
 </aside>
@@ -144,16 +171,6 @@
       </table>
     </div>
 
-    <div class="alloc-grid" id="alloc-section">
-      <div>
-        <div class="alloc-title">By Category</div>
-        <div id="alloc-cat"></div>
-      </div>
-      <div>
-        <div class="alloc-title">By Sector</div>
-        <div id="alloc-sector"></div>
-      </div>
-    </div>
   </div>
 
   <!-- ══ INSIGHTS ══ -->
@@ -165,11 +182,6 @@
       </div>
     </div>
 
-    <!-- Market value nudge — shown when some holdings have no price history -->
-    <div id="mv-nudge" class="ins-nudge" style="display:none">
-      <span>Some holdings shown at cost basis — <a href="#" id="mv-nudge-link">connect Alpha Vantage</a> to track market value.</span>
-      <button class="ins-nudge-dismiss" id="mv-nudge-dismiss">✕</button>
-    </div>
 
     <div class="ins-card">
       <div class="ins-card-title">Allocation by Category</div>
@@ -238,6 +250,15 @@
       <button id="txn-download-btn" class="btn-download-csv">Download CSV</button>
     </div>
     <div class="filter-bar">
+      <select id="txn-fund-filter" class="filter-select">
+        <option value="">All funds</option>
+      </select>
+      <select id="txn-category-filter" class="filter-select">
+        <option value="">All categories</option>
+      </select>
+      <select id="txn-sector-filter" class="filter-select">
+        <option value="">All sectors</option>
+      </select>
       <select id="txn-broker-filter" class="filter-select">
         <option value="">All brokers</option>
       </select>
@@ -272,58 +293,24 @@
     </div>
   </div>
 
-  <!-- ══ PRICES ══ -->
-  <div class="view" id="view-prices">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Prices</div>
-        <div class="page-sub">Stalest prices at top</div>
-      </div>
-      <button id="save-all-prices-btn" class="btn-secondary" disabled style="background:var(--surface);border-color:#c8c8c8">Save all prices</button>
-    </div>
-    <div class="filter-bar">
-      <input id="price-fund-filter" class="filter-select" type="text" placeholder="Search fund…" style="width:160px;border-color:#c8c8c8;background:var(--surface)">
-      <select id="price-category-filter" class="filter-select"><option value="">All categories</option></select>
-      <select id="price-sector-filter" class="filter-select"><option value="">All sectors</option></select>
-      <select id="price-currency-filter" class="filter-select">
-        <option value="">All currencies</option>
-        <option value="INR">INR</option>
-        <option value="USD">USD</option>
-      </select>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Fund</th>
-            <th>Currency</th>
-            <th class="num">Price</th>
-            <th></th>
-            <th>Last Updated</th>
-          </tr>
-        </thead>
-        <tbody id="prices-tbody"></tbody>
-      </table>
-    </div>
-  </div>
 
   <!-- ══ ADD ══ -->
   <div class="view" id="view-add">
     <div class="page-header">
       <div>
-        <div class="page-title">Add</div>
+        <div class="page-title">Transactions</div>
         <div class="page-sub">Add a ticker or transaction</div>
       </div>
     </div>
 
     <div class="add-tabs">
-      <button class="add-tab active" data-tab="ticker">Add Fund</button>
-      <button class="add-tab" data-tab="transaction">Add Transaction</button>
-      <button class="add-tab" data-tab="live-prices">Live Prices</button>
+      <button class="add-tab active" data-tab="transaction">Bulk import</button>
+      <button class="add-tab" data-tab="ticker">Manually</button>
     </div>
 
     <!-- Add Ticker -->
-    <div class="form-card" id="add-ticker-form">
+    <div class="form-card" id="add-ticker-form" style="display:none">
+      <div class="import-section-title">Add fund</div>
       <div class="form-grid">
         <div class="form-group full">
           <label>Name</label>
@@ -368,124 +355,11 @@
       <button class="btn-submit" id="btn-add-ticker">Add Fund</button>
     </div>
 
-    <!-- Import from broker -->
-    <div id="import-upload-card" class="form-card" style="display:none">
-      <div class="import-section-title">Import from broker</div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label>Source</label>
-          <select id="import-source">
-            <option value="groww_mf">Groww MFs</option>
-            <option value="vested">Vested</option>
-            <option value="groww_stocks">Groww Stocks</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Currency</label>
-          <select id="import-currency">
-            <option value="INR">INR</option>
-            <option value="USD">USD</option>
-          </select>
-        </div>
-        <div class="form-group full">
-          <label>File (.xlsx)</label>
-          <input type="file" id="import-file" accept=".xlsx">
-        </div>
-      </div>
-      <button class="btn-submit" id="btn-parse-file">Parse file</button>
-    </div>
-
-    <!-- Import review screen -->
-    <div id="import-review-card" class="form-card" style="display:none">
-      <div id="import-summary-banner" class="import-banner"></div>
-      <div id="import-unresolved"></div>
-      <div class="import-table-wrap">
-        <table class="import-table">
-          <thead>
-            <tr>
-              <th></th><th>Date</th><th>Fund</th><th>Type</th>
-              <th class="num">Units</th><th class="num">Price</th>
-              <th class="num">Amount</th><th>Curr.</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="import-txn-tbody"></tbody>
-        </table>
-      </div>
-      <div style="display:flex;gap:10px;margin-top:16px">
-        <button class="btn-secondary" id="btn-import-back">← Back</button>
-        <button class="btn-submit" id="btn-import-confirm" style="flex:1">Import transactions</button>
-      </div>
-    </div>
-
     <div class="import-divider" id="import-divider" style="display:none"></div>
-
-    <!-- Live Prices -->
-    <div id="live-prices-panel" style="display:none">
-      <div class="lp-subtabs">
-        <button class="lp-subtab active" data-lp-tab="us-equity">US Equity</button>
-        <button class="lp-subtab" data-lp-tab="indian-mf">Indian MF</button>
-      </div>
-
-      <!-- US Equity pane -->
-      <div id="lp-pane-us-equity">
-        <div class="form-card">
-          <div class="lp-section-title">Alpha Vantage API Key</div>
-          <div class="lp-key-row">
-            <input id="lp-api-key" type="password" class="lp-key-input" placeholder="Paste your free API key from alphavantage.co">
-            <button class="btn-secondary" id="lp-save-key">Save</button>
-          </div>
-          <div class="lp-key-status" id="lp-key-status"></div>
-        </div>
-
-        <div class="form-card" id="lp-ticker-card">
-          <div class="lp-section-title">USD Holdings — Symbol Mapping &amp; Refresh</div>
-          <div class="lp-section-sub">Enter the exchange symbol for each holding (e.g. AAPL, META), then select and fetch to load price history.</div>
-          <table class="lp-table" id="lp-ticker-table">
-            <thead>
-              <tr>
-                <th><input type="checkbox" id="lp-select-all"></th>
-                <th>Ticker</th>
-                <th>Symbol</th>
-                <th class="num">Last Price</th>
-                <th>Last Updated</th>
-              </tr>
-            </thead>
-            <tbody id="lp-ticker-tbody"></tbody>
-          </table>
-          <div class="lp-actions-row">
-            <button class="btn-submit" id="lp-fetch-btn" disabled>Fetch Selected</button>
-            <div class="lp-fetch-status" id="lp-fetch-status"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Indian MF pane -->
-      <div id="lp-pane-indian-mf" style="display:none">
-        <div class="form-card">
-          <div class="lp-section-title">Indian Mutual Funds — Scheme Mapping &amp; Refresh</div>
-          <div class="lp-section-sub">Search and assign an mfapi.in scheme to each holding. Only mutual fund schemes are supported; INR equities can be left unmapped.</div>
-          <table class="lp-table" id="lp-mf-table">
-            <thead>
-              <tr>
-                <th><input type="checkbox" id="lp-mf-select-all"></th>
-                <th>Fund</th>
-                <th>Scheme</th>
-                <th class="num">Last NAV</th>
-                <th>Last Updated</th>
-              </tr>
-            </thead>
-            <tbody id="lp-mf-tbody"></tbody>
-          </table>
-          <div class="lp-actions-row">
-            <button class="btn-submit" id="lp-mf-fetch-btn" disabled>Fetch Selected</button>
-            <div class="lp-fetch-status" id="lp-mf-fetch-status"></div>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- Add Transaction -->
     <div class="form-card" id="add-txn-form" style="display:none">
+      <div class="import-section-title">Add transaction</div>
       <div class="form-grid">
         <div class="form-group">
           <label>Fund</label>
@@ -534,6 +408,227 @@
         </div>
       </div>
       <button class="btn-submit" id="btn-add-txn">Add Transaction</button>
+    </div>
+
+    <!-- Import from broker -->
+    <div id="import-upload-card" class="form-card">
+      <div class="import-section-title">Bulk import transactions file from broker</div>
+      <div class="import-broker-edu">
+        <p>Download your transaction history directly from your broker and upload it here to import all transactions at once.</p>
+        <div class="import-broker-steps">
+          <div class="import-broker-step">
+            <span class="import-broker-step-num">1</span>
+            <span>Log in to your broker and go to <strong>Reports</strong> or <strong>Statement</strong> section.</span>
+          </div>
+          <div class="import-broker-step">
+            <span class="import-broker-step-num">2</span>
+            <span>Export or download your transaction history as an <strong>.xlsx</strong> file.</span>
+          </div>
+          <div class="import-broker-step">
+            <span class="import-broker-step-num">3</span>
+            <span>Select your broker below, choose the file, and click <strong>Parse file</strong>.</span>
+          </div>
+        </div>
+        <div class="import-broker-supported">
+          <span class="import-broker-supported-label">Supported brokers:</span>
+          <span class="import-broker-chip">Groww MFs</span>
+          <span class="import-broker-chip">Groww Stocks</span>
+          <span class="import-broker-chip">Vested</span>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Source</label>
+          <select id="import-source">
+            <option value="groww_mf">Groww MFs</option>
+            <option value="vested">Vested</option>
+            <option value="groww_stocks">Groww Stocks</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Currency</label>
+          <input type="text" id="import-currency" readonly disabled style="opacity:0.6;cursor:default" value="INR">
+        </div>
+        <div class="form-group full">
+          <label>File (.xlsx)</label>
+          <input type="file" id="import-file" accept=".xlsx">
+        </div>
+      </div>
+      <button class="btn-submit" id="btn-parse-file">Parse file</button>
+    </div>
+
+    <!-- Import review screen -->
+    <div id="import-review-card" class="form-card" style="display:none">
+      <!-- Step progress indicator -->
+      <div class="import-steps">
+        <div class="import-step" id="import-step-1-indicator">
+          <span class="import-step-num">1</span>
+          <span class="import-step-label">Review transactions</span>
+        </div>
+        <div class="import-step-connector"></div>
+        <div class="import-step" id="import-step-2-indicator">
+          <span class="import-step-num">2</span>
+          <span class="import-step-label">Assign new funds</span>
+        </div>
+      </div>
+
+      <!-- Step 1: Review transactions -->
+      <div id="import-step-1">
+        <div id="import-summary-banner" class="import-banner"></div>
+        <div class="import-table-wrap">
+          <table class="import-table">
+            <thead>
+              <tr>
+                <th></th><th>Date</th><th>Fund</th><th>Type</th>
+                <th class="num">Units</th><th class="num">Price</th>
+                <th class="num">Amount</th><th>Curr.</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="import-txn-tbody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn-secondary" id="btn-import-back">← Back</button>
+          <button class="btn-submit" id="btn-step1-next" style="flex:1">Next →</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Assign new funds -->
+      <div id="import-step-2" style="display:none">
+        <div class="import-funds-header">
+          <div>
+            <div class="import-funds-title">Assign new funds</div>
+            <div class="import-funds-subtitle">Category and sector help power your allocation charts and filters — you can always update them later.</div>
+          </div>
+          <div id="import-funds-progress" class="import-funds-progress-pill"></div>
+        </div>
+        <div id="import-unresolved" class="import-funds-scroll"></div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn-secondary" id="btn-step2-back">← Back</button>
+          <button class="btn-submit" id="btn-import-confirm" style="flex:1">Import transactions</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ PRICES ══ -->
+  <div class="view" id="view-prices">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Prices</div>
+        <div class="page-sub">Manage price data for your holdings</div>
+      </div>
+    </div>
+
+    <div class="lp-subtabs">
+      <button class="lp-subtab active" data-lp-tab="csv-upload">CSV Upload</button>
+      <button class="lp-subtab" data-lp-tab="indian-mf">Indian MF</button>
+      <button class="lp-subtab" data-lp-tab="us-equity">US Equity</button>
+    </div>
+
+    <!-- CSV Upload pane -->
+    <div id="lp-pane-csv-upload">
+      <div class="form-card">
+        <div class="lp-section-title">How to get price data</div>
+        <div class="lp-section-sub">Use the Google Finance formula in Google Sheets to pull monthly close prices, then download as CSV and upload below.</div>
+        <div class="lp-howto">
+          <div class="lp-howto-step">
+            <span class="lp-howto-num">1</span>
+            <div>
+              <div class="lp-howto-label">Paste this formula into a Google Sheet (replace SYMBOL)</div>
+              <code class="lp-howto-code">=GOOGLEFINANCE("SYMBOL","close",DATE(2020,1,1),TODAY(),"WEEKLY")</code>
+              <div class="lp-howto-hint">Examples: <strong>RELIANCE.NSE</strong> · <strong>AAPL</strong> · <strong>0P0000XVPO.BO</strong> (for MFs on BSE)</div>
+            </div>
+          </div>
+          <div class="lp-howto-step">
+            <span class="lp-howto-num">2</span>
+            <div>
+              <div class="lp-howto-label">Download the sheet as CSV</div>
+              <div class="lp-howto-hint">File → Download → Comma Separated Values (.csv)</div>
+            </div>
+          </div>
+          <div class="lp-howto-step">
+            <span class="lp-howto-num">3</span>
+            <div>
+              <div class="lp-howto-label">Upload against the matching holding below</div>
+              <div class="lp-howto-hint">Upload weekly data only. The CSV must have <strong>date</strong> and <strong>close</strong> columns.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="form-card">
+        <div class="lp-section-title">All Holdings</div>
+        <div class="lp-section-sub">Set a symbol and upload a CSV for each holding. Holdings without any price history are shown first.</div>
+        <table class="lp-table" id="lp-upload-table">
+          <thead>
+            <tr>
+              <th>Holding</th>
+              <th>Symbol</th>
+              <th>Coverage</th>
+              <th>Upload</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="lp-upload-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Indian MF pane -->
+    <div id="lp-pane-indian-mf" style="display:none">
+      <div class="form-card">
+        <div class="lp-section-title">Indian Mutual Funds — Scheme Mapping &amp; Refresh</div>
+        <div class="lp-section-sub">Search and assign an mfapi.in scheme to each holding. Only mutual fund schemes are supported; INR equities can be left unmapped.</div>
+        <table class="lp-table" id="lp-mf-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="lp-mf-select-all"></th>
+              <th>Fund</th>
+              <th>Scheme</th>
+              <th class="num">Last NAV</th>
+              <th>Last Updated</th>
+            </tr>
+          </thead>
+          <tbody id="lp-mf-tbody"></tbody>
+        </table>
+        <div class="lp-actions-row">
+          <button class="btn-submit" id="lp-mf-fetch-btn" disabled>Fetch Selected</button>
+          <div class="lp-fetch-status" id="lp-mf-fetch-status"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- US Equity pane -->
+    <div id="lp-pane-us-equity" style="display:none">
+      <div class="form-card">
+        <div class="lp-section-title">Alpha Vantage API Key</div>
+        <div class="lp-key-row">
+          <input id="lp-api-key" type="password" class="lp-key-input" placeholder="Paste your free API key from alphavantage.co">
+          <button class="btn-secondary" id="lp-save-key">Save</button>
+        </div>
+        <div class="lp-key-status" id="lp-key-status"></div>
+      </div>
+      <div class="form-card" id="lp-ticker-card">
+        <div class="lp-section-title">USD Holdings — Symbol Mapping &amp; Refresh</div>
+        <div class="lp-section-sub">Enter the exchange symbol for each holding (e.g. AAPL, META), then select and fetch to load price history.</div>
+        <table class="lp-table" id="lp-ticker-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="lp-select-all"></th>
+              <th>Ticker</th>
+              <th>Symbol</th>
+              <th class="num">Last Price</th>
+              <th>Last Updated</th>
+            </tr>
+          </thead>
+          <tbody id="lp-ticker-tbody"></tbody>
+        </table>
+        <div class="lp-actions-row">
+          <button class="btn-submit" id="lp-fetch-btn" disabled>Fetch Selected</button>
+          <div class="lp-fetch-status" id="lp-fetch-status"></div>
+        </div>
+      </div>
     </div>
   </div>
 
